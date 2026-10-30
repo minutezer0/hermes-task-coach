@@ -13,7 +13,7 @@ class CLITest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.data = self.root / "data"
-        self.env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"), HERMES_HOME=str(self.root / "profile"))
+        self.env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(Path(__file__).resolve().parents[1] / "skills" / "task-coach" / "scripts"), HERMES_HOME=str(self.root / "profile"))
 
     def run_cli(self, *args, ok=True, data=True, input=None):
         command = [sys.executable, "-m", "task_coach"]

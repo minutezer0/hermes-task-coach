@@ -21,34 +21,40 @@ Python 3.11 or newer with SQLite and IANA timezone data. Initial validation is o
 Linux; other operating systems have not been qualified. There are no third-party
 runtime Python dependencies.
 
-## Install from a checkout
-
-Run these commands from a checkout containing this version:
+## Install the Hermes skill
 
 ```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install .
-.venv/bin/task-coach --help
+hermes skills install minutezer0/hermes-task-coach/skills/task-coach
 ```
 
-Activate that environment or add its `bin` directory to the PATH used by Hermes
-so that `task-coach` is available to the agent. The CLI can be used on its own.
-For development without installation, use `PYTHONPATH=src python3 -m task_coach`.
+Then open or resume a Hermes conversation and ask Hermes to set up Task Coach.
+Installing a skill does not itself launch a chat. Hermes checks the bundled helper,
+asks focused questions about your preferences, and saves them using setup flags.
+No separate pip install, PATH changes, or manual runtime copying is required for
+this skill. No gateway configuration or scheduled jobs are created.
 
-To add the Hermes skill, copy `skills/task-coach` into the intended active
-profile's `skills` directory. The main file is `skills/task-coach/SKILL.md`.
-Installing the skill does not install the companion command; both are needed for
-the Hermes workflow. No gateway configuration or scheduled jobs are created.
+The entire runtime ships inside `skills/task-coach`. Hermes uses the installed
+`skill_dir` reported when loading the skill, not a checkout or a global command.
+The skill and its runtime can be relocated or reinstalled without moving task
+data: settings and tasks are stored outside the skill directory by default.
 
-## Get started
+## Use the helper directly (optional)
+
+Replace `<skill_dir>` below with the actual installed directory reported by
+Hermes. Quote the path, including when it contains spaces. You can run the helper
+from any working directory:
 
 ```sh
-task-coach setup --interactive
-task-coach add 'Example task' --notes 'Choose a small next step'
-task-coach list
-task-coach show 1
-task-coach done 1
+python3 "<skill_dir>/scripts/task-coach.py" --help
+python3 "<skill_dir>/scripts/task-coach.py" setup --interactive
+python3 "<skill_dir>/scripts/task-coach.py" add 'Example task' --notes 'Choose a small next step'
+python3 "<skill_dir>/scripts/task-coach.py" list
+python3 "<skill_dir>/scripts/task-coach.py" show 1
+python3 "<skill_dir>/scripts/task-coach.py" done 1
 ```
+
+Interactive setup is optional for terminal use. In chat, Hermes collects your
+answers and runs non-interactive `setup` with flags instead of waiting for stdin.
 
 The ID above assumes a newly initialized empty store. Use the ID returned by
 `add` when working with an existing store. Commands return JSON. A task remains
@@ -59,8 +65,8 @@ repeat setup preserves tasks and configuration. Use `setup --update` to change
 existing settings deliberately. For example:
 
 ```sh
-task-coach setup --update --timezone UTC --weekdays mon,wed,fri
-task-coach setup --help
+python3 "<skill_dir>/scripts/task-coach.py" setup --update --timezone UTC --weekdays mon,wed,fri
+python3 "<skill_dir>/scripts/task-coach.py" setup --help
 ```
 
 Default preferences are UTC, Monday through Friday, 09:00–17:00, two unanswered
@@ -74,8 +80,8 @@ the CLI uses `$XDG_DATA_HOME/task-coach` or `~/.local/share/task-coach`.
 An explicit override goes before the subcommand:
 
 ```sh
-task-coach --data-dir ./example-data init
-task-coach --data-dir ./example-data add 'Example task'
+python3 "<skill_dir>/scripts/task-coach.py" --data-dir ./example-data init
+python3 "<skill_dir>/scripts/task-coach.py" --data-dir ./example-data add 'Example task'
 ```
 
 Only `init` and `setup` initialize a store. Other commands report an error if it
@@ -88,7 +94,8 @@ has not been initialized. Storage is not automatically imported from other tools
 - Snooze: a timestamp with an explicit offset; it does not change the due date.
 - Notes: plain text; checkbox lines may be maintained manually.
 
-Use `task-coach COMMAND --help` for each command's options. `export` writes all
+Use `python3 "<skill_dir>/scripts/task-coach.py" COMMAND --help` for options.
+`export` writes all
 tasks as JSON to stdout. `done` is idempotent; repeating it does not create a new
 task or change an already completed task's timestamp.
 
@@ -102,11 +109,40 @@ rather than presenting the entire list by default.
 Requests for automatic reminders require a future delivery integration. This
 release does not create cron jobs or silently fall back to another messenger.
 
-## Development
+## Standalone CLI from a checkout (optional)
+
+The Hermes skill does not need this installation. For a standalone console command,
+run from a checkout:
 
 ```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/task-coach --help
+.venv/bin/task-coach setup --interactive
+```
+
+The optional `task-coach` console entry point is `task_coach.cli:main`, defined
+in `pyproject.toml`. It uses the Python interpreter that installed the package
+(for example, the virtual environment's interpreter), while the skill invokes
+`python3` explicitly. Both use the same canonical runtime in
+`skills/task-coach/scripts/task_coach`; there is no separate source copy.
+Wheels also include the complete skill under `share/task-coach/skill` in the
+installation prefix.
+
+## Development
+
+Run directly from a checkout without installing a package:
+
+```sh
+python3 skills/task-coach/scripts/task-coach.py --help
 python3 -B -m unittest discover -s tests -v
 ```
+
+The runtime and copied-skill tests need only the Python standard library.
+The separate wheel artifact test requires the build dependency `setuptools>=68`
+and Python's `venv`/pip support; it is skipped when setuptools is unavailable.
+It builds and installs a wheel offline into temporary storage, then exercises
+both its console entry point and its independently copied skill helper.
 
 ## License
 

@@ -3,16 +3,18 @@
 !/LICENSE
 !/README.md
 !/pyproject.toml
-!/src/
-!/src/task_coach/
-!/src/task_coach/**/*.py
-!/src/task_coach/*.py
 !/tests/
 !/tests/test_core*.py
 !/tests/test_cli*.py
 !/skills/
 !/skills/task-coach/
 !/skills/task-coach/SKILL.md
+!/skills/task-coach/references/
+!/skills/task-coach/references/LICENSE
+!/skills/task-coach/scripts/
+!/skills/task-coach/scripts/task-coach.py
+!/skills/task-coach/scripts/task_coach/
+!/skills/task-coach/scripts/task_coach/*.py
 
 __pycache__/
 *.py[cod]
