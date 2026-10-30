@@ -11,17 +11,38 @@ metadata:
 
 # Task Coach
 
-Use the installed `task-coach` CLI as the source of truth for local tasks. This
+Use the bundled Python helper as the source of truth for local tasks. This
 release supports user-initiated conversations and task management. It does not
 schedule or send unattended check-ins. Stored notification preferences and an
 optional destination are preparation for later integration, not active reminders.
 
 ## Prerequisite
 
-Run `task-coach --help` to confirm the CLI is available. If it is missing, explain
-that the companion Python package must be installed using the repository README.
-Installing this skill alone does not install the CLI. Do not claim a command ran
-when it failed or substitute remembered task contents for a failed read.
+Use the actual installed `skill_dir` reported by Hermes when loading this skill.
+In every command below, replace `<skill_dir>` with that absolute directory; the
+placeholder is not a literal path. Do not assume the shell's working directory,
+a checkout path, or a global `task-coach` executable.
+
+```sh
+python3 "<skill_dir>/scripts/task-coach.py" --help
+python3 "<skill_dir>/scripts/task-coach.py" setup --help
+```
+
+Check the helper before asking setup questions. Python 3.11 or newer with SQLite
+and IANA timezone data is required; no pip install or PATH changes are needed.
+If the helper fails, report its error and resolve the prerequisite instead of
+claiming success or substituting remembered task contents for a failed read.
+Help does not initialize storage.
+
+## Bundled helper
+
+The skill includes the complete local runtime:
+
+- [Python launcher](scripts/task-coach.py)
+- [Package initialization](scripts/task_coach/__init__.py)
+- [Module entry point](scripts/task_coach/__main__.py)
+- [Task CLI and storage](scripts/task_coach/cli.py)
+- [MIT license](references/LICENSE)
 
 ## Guided setup
 
@@ -38,10 +59,21 @@ Explain that automated delivery is not yet available before collecting messaging
 preferences. Do not request credentials or send a setup message. The user may
 skip optional destination setup entirely.
 
-Use `task-coach setup` with the confirmed settings. For a terminal user,
-`task-coach setup --interactive` provides prompts. `task-coach init` creates an
-empty task store with defaults; do not add sample tasks. Existing settings are
-preserved on repeated setup. Use `setup --update` only for requested changes.
+After confirming answers in chat, run non-interactive setup with explicit flags,
+not `--interactive`: an agent must not wait for terminal stdin. For example, if
+these are the user's confirmed choices:
+
+```sh
+python3 "<skill_dir>/scripts/task-coach.py" setup --timezone UTC --weekdays mon,tue,wed,thu,fri --notification-start 09:00 --notification-end 17:00 --max-unanswered-followups 2 --min-followup-interval 30 --max-followup-interval 120
+```
+
+Leave out `--destination` when unset. Terminal users may optionally invoke
+`python3 "<skill_dir>/scripts/task-coach.py" setup --interactive` themselves.
+`python3 "<skill_dir>/scripts/task-coach.py" init` creates an empty task store
+with defaults; do not add sample tasks. Existing settings are preserved on repeated
+setup. Use `setup --update` only for requested changes. Read back with
+`python3 "<skill_dir>/scripts/task-coach.py" setup` to verify saved configuration,
+and `python3 "<skill_dir>/scripts/task-coach.py" list` to verify the store.
 Return a concise summary of saved settings and the current delivery limitation.
 
 The default storage path is the active `HERMES_HOME` directory's `task-coach`
@@ -52,8 +84,9 @@ profile or a discovered database is the user's intended task source.
 
 ## Task commands
 
-Read `task-coach SUBCOMMAND --help` when unsure of syntax. All successful commands
-return JSON; use the returned task ID, not a predicted counter.
+Read `python3 "<skill_dir>/scripts/task-coach.py" SUBCOMMAND --help` when unsure
+of syntax. Always invoke subcommands through this explicit Python helper path.
+All successful commands return JSON; use the returned task ID, not a predicted counter.
 
 - `add TITLE [--notes TEXT] [--priority low|normal|high] [--due DATE_OR_TIMESTAMP]`
 - `list` and `export` return saved tasks; inspect status and snoozed_until before
