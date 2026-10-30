@@ -29,7 +29,8 @@ python3 "<skill_dir>/scripts/task-coach.py" setup --help
 ```
 
 Check the helper before asking setup questions. Python 3.11 or newer with SQLite
-and IANA timezone data is required; no pip install or PATH changes are needed.
+and IANA timezone data is required. No additional package installation or shell
+configuration is needed.
 If the helper fails, report its error and resolve the prerequisite instead of
 claiming success or substituting remembered task contents for a failed read.
 Help does not initialize storage.

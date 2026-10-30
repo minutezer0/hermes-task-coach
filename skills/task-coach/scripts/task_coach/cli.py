@@ -55,8 +55,9 @@ def validate_config(config):
 
 
 def default_data_dir():
-    if os.environ.get("HERMES_HOME"):
-        return Path(os.environ["HERMES_HOME"]) / "task-coach"
+    profile_home = os.environ.get("HERMES_HOME")
+    if profile_home:
+        return Path(profile_home) / "task-coach"
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "task-coach"
 
 
