@@ -112,6 +112,22 @@ work through a blocker. The skill uses the CLI's current task records instead of
 conversation history. It starts with one short question and follows your answer,
 rather than presenting the entire list by default.
 
+### Interactive coaching and automatic check-ins
+
+Interactive task management can be used through Hermes’s supported chat interfaces.
+Use the terminal/TUI or a connected messaging conversation to manage tasks, choose
+a next step, and work through blockers. Interactive coaching does not require
+Discord or scheduled jobs. Automatic check-ins currently implement Discord only;
+other messaging platforms require additional integration and testing.
+
+A dedicated TUI session can keep coaching conversations together, but it is not a
+notification channel. Task Coach does not currently deliver automatic check-ins
+into TUI sessions or alert you when another session needs attention.
+
+You can manage tasks in the TUI and receive check-ins through Discord. To stop
+follow-ups by replying, respond in the configured Discord conversation; replies
+in a separate TUI session are not detected by the Discord adapter.
+
 For automatic check-ins, ask Hermes to configure the optional native runtime.
 It uses Hermes cron, composes short questions through the agent, sends through
 the existing Hermes connection, and checks owner activity before follow-ups.
