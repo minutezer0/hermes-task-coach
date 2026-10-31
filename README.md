@@ -9,11 +9,15 @@ A local task manager and conversational coaching skill for Hermes Agent.
 - Add, list, search, show, update, complete, snooze and export commands.
 - Guided terminal setup and a Hermes skill for conversational setup and coaching.
 - Saved timezone, weekdays, notification window and follow-up preferences.
+- Randomized daily check-in plans, deadline/priority-weighted task selection and bounded follow-ups.
+- An optional native-Hermes runtime with durable send tracking and owner-reply suppression.
 
-This is an early local-only release. Automated check-ins are **not enabled or
-implemented**. Saving a destination or follow-up settings does not schedule
-messages. Recurring tasks, native subtasks and external task-provider integrations
-are not included yet. Platform-independent delivery remains a planned feature.
+Installing the skill or saving preferences does not enable messages. Proactive
+coaching requires explicit setup using an already-configured Hermes messaging
+destination. The first implemented history adapter is Discord; other messaging
+platforms are not supported for automatic check-ins yet. Local task management
+does not require a messaging account. Recurring tasks, native subtasks and external
+task-provider integrations are not included yet.
 
 ## Requirements
 
@@ -31,7 +35,8 @@ Then open or resume a Hermes conversation and ask Hermes to set up Task Coach.
 Installing a skill does not itself launch a chat. Hermes checks the bundled helper,
 asks focused questions about your preferences, and saves them using setup flags.
 No separate pip install, PATH changes, or manual runtime copying is required for
-this skill. No gateway configuration or scheduled jobs are created.
+this skill. Installation alone creates no gateway configuration or scheduled jobs.
+If you request proactive coaching, Hermes guides the separate, confirmed setup.
 
 The entire runtime ships inside `skills/task-coach`. Hermes uses the installed
 `skill_dir` reported when loading the skill, not a checkout or a global command.
@@ -70,8 +75,9 @@ python3 "<skill_dir>/scripts/task-coach.py" setup --help
 ```
 
 Default preferences are UTC, Monday through Friday, 09:00–17:00, two unanswered
-follow-ups and 30–120 minute intervals. Preferences are stored but do not trigger
-reminders in this release. Overnight notification windows are not supported.
+follow-ups and 30–120 minute intervals. Preferences alone do not trigger reminders;
+the optional runtime must be configured separately. Overnight notification windows
+are not supported.
 
 ## Storage and task fields
 
@@ -106,8 +112,37 @@ work through a blocker. The skill uses the CLI's current task records instead of
 conversation history. It starts with one short question and follows your answer,
 rather than presenting the entire list by default.
 
-Requests for automatic reminders require a future delivery integration. This
-release does not create cron jobs or silently fall back to another messenger.
+### Interactive coaching and automatic check-ins
+
+Interactive task management can be used through Hermes’s supported chat interfaces.
+Use the terminal/TUI or a connected messaging conversation to manage tasks, choose
+a next step, and work through blockers. Interactive coaching does not require
+Discord or scheduled jobs. Automatic check-ins currently implement Discord only;
+other messaging platforms require additional integration and testing.
+
+A dedicated TUI session can keep coaching conversations together, but it is not a
+notification channel. Task Coach does not currently deliver automatic check-ins
+into TUI sessions or alert you when another session needs attention.
+
+You can manage tasks in the TUI and receive check-ins through Discord. To stop
+follow-ups by replying, respond in the configured Discord conversation; replies
+in a separate TUI session are not detected by the Discord adapter.
+
+For automatic check-ins, ask Hermes to configure the optional native runtime.
+It uses Hermes cron, composes short questions through the agent, sends through
+the existing Hermes connection, and checks owner activity before follow-ups.
+Setup produces an initially paused job and a scoped normal-conversation
+instruction for your approval; it does not connect messaging accounts or silently
+fall back to another messenger. If messaging is not configured, use Hermes's own
+messaging setup first, or continue using Task Coach locally.
+
+See the [native runtime guide](skills/task-coach/references/native-runtime.md)
+for setup and operation, and the [engine contract](skills/task-coach/references/coaching.md)
+for scheduling and state behavior. Automated tests use fictional messaging
+fixtures, not live platform qualification. Keep a new job paused until a test in
+your chosen conversation verifies delivery, reply suppression and contextual
+continuation. A reply arriving during an already-authorized network send can race
+with that message; the runtime does not promise atomic cancellation.
 
 ## Standalone CLI from a checkout (optional)
 

@@ -55,12 +55,14 @@ class SkillBundleTest(unittest.TestCase):
         files = metadata["tool"]["setuptools"].get("data-files", {})
         expected = {
             "share/task-coach/skill": ["skills/task-coach/SKILL.md"],
-            "share/task-coach/skill/references": ["skills/task-coach/references/LICENSE"],
+            "share/task-coach/skill/references": ["skills/task-coach/references/LICENSE", "skills/task-coach/references/coaching.md", "skills/task-coach/references/native-runtime.md"],
             "share/task-coach/skill/scripts": ["skills/task-coach/scripts/task-coach.py"],
             "share/task-coach/skill/scripts/task_coach": [
                 "skills/task-coach/scripts/task_coach/__init__.py",
                 "skills/task-coach/scripts/task_coach/__main__.py",
                 "skills/task-coach/scripts/task_coach/cli.py",
+                "skills/task-coach/scripts/task_coach/coaching.py",
+                "skills/task-coach/scripts/task_coach/driver.py",
             ],
         }
         self.assertEqual(files, expected)
