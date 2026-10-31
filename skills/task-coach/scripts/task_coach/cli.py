@@ -69,7 +69,8 @@ def due_value(value, *, aware_only=False):
             parsed = datetime.fromisoformat(value)
             if "T" not in value or parsed.utcoffset() is None:
                 raise ValueError
-    except ValueError:
+            parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
         raise argparse.ArgumentTypeError("expected a valid date or timezone-aware ISO timestamp" if not aware_only else "expected a timezone-aware ISO timestamp") from None
     return value
 
@@ -105,10 +106,24 @@ def get_task(db, key):
 
 
 def main(argv=None):
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    positional = arguments
+    if positional[:1] == ['--data-dir']:
+        positional = positional[2:]
+    elif positional and positional[0].startswith('--data-dir='):
+        positional = positional[1:]
+    is_tick = positional[:2] in (['coach', 'tick'], ['runtime', 'preflight'])
     try:
-        return run(argv)
+        return run(arguments)
+    except SystemExit as error:
+        if is_tick and error.code:
+            print(json.dumps(dict(wakeAgent=False, reason='invalid-tick-arguments')))
+            return 2
+        raise
     except (OSError, sqlite3.Error, ValueError, EOFError, KeyboardInterrupt) as error:
         print("task-coach: error: " + str(error), file=sys.stderr)
+        if is_tick:
+            print(json.dumps(dict(wakeAgent=False, reason='engine-error')))
         return 2
 
 
@@ -133,6 +148,25 @@ def run(argv=None):
         setup.add_argument("--" + field, type=int)
     commands.add_parser("list")
     commands.add_parser("export")
+    coach = commands.add_parser('coach', description='Local intent engine only; external delivery bridge required.')
+    operations = coach.add_subparsers(dest='coach_command', required=True)
+    for operation in ('status', 'inspect', 'pause', 'resume'):
+        operations.add_parser(operation)
+    tick = operations.add_parser('tick', help='Claim a due intent; never sends a message')
+    tick.add_argument('--binding', type=json.loads)
+    tick.add_argument('--evidence', type=json.loads)
+    preview = operations.add_parser('preview', help='Isolated development plan; does not consume engine state')
+    preview.add_argument('--binding', type=json.loads, required=True)
+    preview.add_argument('--at', type=lambda v: due_value(v, aware_only=True))
+    preview.add_argument('--seed', type=int)
+    ack = operations.add_parser('ack', help='Record an externally confirmed delivery, not an intent')
+    ack.add_argument('--receipt', type=json.loads, required=True)
+    for operation in ('engaged', 'failed'):
+        outcome = operations.add_parser(operation, help='Stop episode on owner engagement or failed send')
+        outcome.add_argument('--event-token', required=True)
+        outcome.add_argument('--binding', type=json.loads, required=True)
+    from .driver import add_parser
+    add_parser(commands)
     add = commands.add_parser("add")
     add.add_argument("title", type=title_value)
     add.add_argument("--notes", default="")
@@ -223,6 +257,27 @@ def run(argv=None):
                     os.unlink(temporary)
         config_path.chmod(0o600)
         result = {"config": config}
+    elif args.command == 'runtime':
+        from .driver import run_cli
+        result = run_cli(directory, args)
+    elif args.command == 'coach':
+        from .coaching import Coach
+        engine = Coach(directory)
+        operation = args.coach_command
+        if operation in ('status', 'inspect'):
+            result = engine.status()
+        elif operation in ('pause', 'resume'):
+            result = engine.pause(operation == 'pause')
+        elif operation == 'tick':
+            result = engine.tick(binding=args.binding, evidence=args.evidence)
+        elif operation == 'preview':
+            result = engine.preview(binding=args.binding, now=args.at, seed=args.seed)
+        elif operation == 'ack':
+            result = engine.acknowledge(args.receipt)
+        elif operation == 'failed':
+            result = engine.failed(args.event_token, args.binding)
+        else:
+            result = engine.stop(args.event_token, args.binding)
     else:
         with closing(sqlite3.connect(store.resolve().as_uri() + "?mode=rw", uri=True)) as db:
             db.row_factory = sqlite3.Row
