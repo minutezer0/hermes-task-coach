@@ -128,7 +128,7 @@ class CLITest(unittest.TestCase):
         self.assertIsNone(config['destination'])
 
     def test_interactive_setup_and_cancel(self):
-        answers = "discord\nEurope/Paris\nmon,tue\n10:00\n16:00\n1\n20\n40\n"
+        answers = "discord\nEurope/Paris\nmon,tue\n10:00\n16:00\n1\n20\n40\nkeep\n"
         config = self.run_cli("setup", "--interactive", input=answers)["config"]
         self.assertEqual(config["timezone"], "Europe/Paris")
         self.assertEqual(config["weekdays"], ["mon", "tue"])

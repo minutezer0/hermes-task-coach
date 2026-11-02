@@ -27,7 +27,10 @@ jobs, or send messages. Tell Hermes a task in your own words, then work on it
 together. Tasks are never marked complete just because you replied.
 
 For Discord, Hermes confirms your existing destination and asks only for missing
-check-in preferences, using everyday language. It presents one understandable
+check-in preferences, using everyday language. The default is up to **3 distinct
+tasks per configured window**. Hermes shows that default (or your saved maximum)
+and asks whether to keep it or customize it, separately from follow-up settings.
+It presents one understandable
 approval for installing a **paused schedule and a narrowly scoped reply-handling
 instruction**. This is not permission to send or activate ongoing check-ins.
 
@@ -81,15 +84,55 @@ Interactive coaching works in the Hermes TUI or a connected chat. The TUI is not
 an automatic notification destination. Reply in the configured Discord conversation
 to stop Discord follow-ups; replies in a different TUI session are not detected.
 A reply arriving during an already-authorized network send can race with that
-message; the runtime does not promise atomic cancellation.
+message; the runtime does not promise atomic cancellation. Current Discord history
+captures omit reply references. Delayed replies can be attributed to an earlier
+task with trusted inbound target metadata (see the runtime guide's optional
+CLI flags and `reply_targets` envelope), or a later explicit owner clarification.
+Without a clear target, eligible multi-task replies temporarily hold automated
+sends and ask which task **by title in normal conversation**, before changing task
+data or engaging any candidate. Bounded clarification retries reuse the configured
+unanswered-follow-up budget and randomized min/max spacing in the current window.
+They ask using candidate titles through the same native draft/history/dispatch/
+positive-receipt protocol, never a detached reminder. Slots and counts survive
+restart; missed retries and missed task sends never catch up. When unanswered, the
+hold lasts until the next allowed notification window, then pending questions are
+retired with audit retained and tasks, engagement, completion and snoozes unchanged.
+Timezone, allowed weekdays and DST determine that window—not midnight. A zero
+follow-up budget means no automatic retries. Resolving/resolved selections and
+pause, failure, uncertain-delivery and other safety blocks are never cleared by
+retirement; clock/configuration/route changes fail closed. A reply to a retry
+receipt returns to its question, never automatic task engagement. Shared answers
+remain unassigned until an explicit selection/dismissal binds the intended question
+atomically; the same reply cannot then be reused for another hold. Unresolved engine
+claims/failures block retry sends and retirement even without an outbox sending row. The guarded `runtime resolve-clarification` command
+binds the original reply and explicit owner selection to immutable candidate snapshots;
+it releases only that ambiguity hold, never other delivery protections or missed
+sends. Selection is not manufactured Discord reply metadata. “Never mind” or
+“dismiss that question” instead uses guarded `runtime dismiss-clarification`:
+the skill binds explicit dismissal to the exact pending question and a fresh
+captured later owner message. Neither task is selected, edited or engaged. The
+original may be edited/deleted and candidates changed/unavailable; their audit
+snapshots and delivery receipts stay immutable. Only that hold is released, future
+slots remain eligible and missed sends never catch up. “Cancel” alone prompts a
+question: dismiss the clarification, cancel a named task, or pause all check-ins?
+Wrong bindings, stale/missing captures and missing receipt anchors refuse safely.
+A durable resolving/resolved selection cannot be undone by dismissal because its
+suppression may already have committed; retry only the same guarded resolution.
+Existing windows permanently blocked by older code are not revived. Explicit replies to unrelated
+messages do not engage coaching. See [the end-to-end clarification flow](skills/task-coach/references/native-runtime.md#clarification-before-mutation).
 
 ## Minute tick is not message cadence
 
 When enabled, the native job checks the local preflight wrapper every minute.
 A quiet `wakeAgent:false` result suppresses the agent turn; it is not an AI call
 or a message every minute. A due result wakes an agent to compose and validate a
-check-in. The randomized daily plan allows one opener plus up to the configured
-number of unanswered follow-ups, within allowed days/window and spacing. Sends
+check-in. The randomized daily plan selects up to the configured maximum of
+distinct tasks, with one opener and bounded unanswered follow-ups per task.
+Replying stops follow-ups for that task; later task check-ins remain scheduled.
+Task sequences do not overlap, with at least 30 minutes between their opportunities
+(or the saved minimum follow-up interval if larger). Too few eligible tasks or
+too little window space produces fewer check-ins, not repeats to fill a quota.
+Uncertain delivery or unverifiable history conservatively blocks later sends. Sends
 still require authorization and, for follow-ups, fresh complete Discord history.
 Missed opportunities are not caught up; failures can suppress a message entirely.
 The native runtime's opportunity is up to ten minutes, capped at window end.
@@ -151,8 +194,11 @@ repeat setup preserves tasks and configuration. Use `setup --update` for deliber
 changes. `setup --update --interactive` displays saved values; blank keeps them.
 Legacy `--destination` stores a preference only and does not configure delivery.
 
-Default preferences are UTC, Monday–Friday, 09:00–17:00, two unanswered follow-ups
-and 30–120 minute intervals. Local-only setup leaves unused notification defaults
+Default preferences are UTC, Monday–Friday, 09:00–17:00, up to 3 distinct tasks,
+up to two unanswered follow-ups per task, and 30–120 minute follow-up intervals.
+Set `--max-tasks-per-window` to an integer from 1 through 10. Saved configurations
+from before this setting retain a maximum of 1 until you explicitly change it
+with `setup --update --max-tasks-per-window 3`. Local-only setup leaves unused notification defaults
 alone. Preferences do not trigger messages. Overnight windows are unsupported.
 
 ## Storage and task fields

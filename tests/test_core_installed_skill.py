@@ -80,7 +80,7 @@ class InstalledSkillTest(unittest.TestCase):
 
     def test_optional_interactive_setup_and_default_storage_are_isolated(self):
         self.env.pop("HERMES_HOME")
-        config = self.cli("setup", "--interactive", input="discord\nUTC\nmon,tue\n10:00\n16:00\n1\n20\n40\n")["config"]
+        config = self.cli("setup", "--interactive", input="discord\nUTC\nmon,tue\n10:00\n16:00\n1\n20\n40\nkeep\n")["config"]
         self.assertEqual(config["weekdays"], ["mon", "tue"])
         self.assertTrue((self.root / "fake xdg" / "task-coach" / "config.json").is_file())
         self.env.pop("XDG_DATA_HOME")

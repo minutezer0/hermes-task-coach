@@ -6,6 +6,26 @@ native `hermes send` as an argument array, not a shell command. The core task an
 coaching engine remain transport-neutral. Only Discord history is implemented;
 unsupported platforms are rejected, never silently allowed to follow up.
 
+## Multiple tasks in one daily window
+
+`max_tasks_per_window` defaults to 3 for new stores and accepts integers 1..10.
+Existing configurations without the key retain 1 until an explicit setup update.
+Ask the maximum-tasks question only for proactive check-ins, showing the default
+or current saved value before offering to keep it or customize.
+
+Each distinct selected task has its own opener and bounded follow-ups. A reply
+stops only the matching task's follow-ups; later task check-ins remain scheduled.
+Global pause, changed configuration/binding and uncertain delivery still suppress
+unattended sends. Sequences are planned without overlap and with an inter-task
+gap of at least 30 minutes (or the saved minimum follow-up interval if larger).
+Fewer eligible tasks or insufficient window space produces fewer sequences.
+Context returns an explicitly targeted confirmed task, or the latest confirmed
+receipt when only one distinct task is represented. Untargeted multi-task context
+returns null rather than guessing; future planned tasks are never returned.
+Keep the exact event token and receipt anchor: never apply an older task's
+engagement to a later task. An explicit one-check-in test stays one opener with
+no follow-ups or additional tasks, regardless of the maximum.
+
 ## Confirmed onboarding, paused native job
 
 Initialize task preferences with `setup`; this does not enable automation. Ask the
@@ -157,8 +177,8 @@ Prefix each command with the explicit installed helper and consistent data path:
 | `runtime observe --event-token TOKEN --fence FENCE --pages-file PATH` | Validate fresh full history and derive evidence/reply-stop |
 | `runtime dispatch --event-token TOKEN --fence FENCE --hermes PATH` | Exact-token claim, final authorization, durable sending, one native send attempt |
 | `runtime confirm --event-token TOKEN --fence FENCE --pages-file PATH [--message-id ID]` | Exact sent-message readback and receipt reconciliation |
-| `runtime context --binding JSON` | Latest confirmed task ID/receipt plus freshly reread current task (null if deleted) |
-| `runtime engagement --binding JSON --pages-file PATH` | Derive persistent owner engagement, stop current matching episode, return context |
+| `runtime context --binding JSON [--reply-to-message-id ID]` | Exact target receipt/current task, or latest receipt only when one distinct task is known; null for unrelated targets or multiple tasks without a target |
+| `runtime engagement --binding JSON --pages-file PATH [--reply-to-message-id TARGET --inbound-message-id ID]` | Attribute captured owner posts, stop only their matching task sequences, return the newest owner's context or null; paired flags select one trusted inbound reply |
 | `coach pause` / `coach resume` / `coach status` | Persistent controls and readback; resume never revives stopped episodes |
 
 Production CLI has no synthetic clock or RNG flags. API tests may inject clocks.
@@ -303,13 +323,270 @@ limitations that prevent exact send readback mean keep the job paused. History
 comes from agent tool captures, not cryptographic provenance: the agent/operator
 must use actual native tool output, not manually assert qualification.
 
-Only persistent posts by the exact nonbot owner after the anchor engage; textless
-attachment posts count. Other users and bots do not. Evidence fields are derived
-by the helper; callers cannot enable followups with complete/engaged/qualified
-booleans. Failure to refresh evidence invalidates the old evidence for that draft.
-Confirm also checks owner posts newer than the sent message and immediately stops
-if present. No typing indicators, read receipts, transient/deleted posts, voice
-presence, or cross-session memory claims are made.
+### Reply attribution and trusted capture interface
+
+Current native Discord `fetch_messages` returns `id`, `content`, `author`,
+`timestamp`, `edited_timestamp`, `attachments`, `reactions`, and `pinned`.
+It does **not** expose `message_reference`. History order alone cannot tell
+whether an owner post replies to task A, task B, or an unrelated message. Do not
+add invented references to `result`, infer targets from message text, or claim
+history-only delayed-reply attribution has been verified live.
+
+When a trusted inbound event/adapter actually exposes a reply target for the exact
+bound owner and destination, preserve it separately from the unmodified raw result.
+An optional page-envelope field supplies only those known targets, keyed by an
+owner message ID present on that page:
+
+```json
+"reply_targets": {"300": "100"}
+```
+
+Here the fictional owner message `300` explicitly replies to confirmed check-in
+`100`. A value of `null` is allowed **only** when trusted metadata positively says
+that post has no reply target; absence of a mapping means unknown, not null. Each
+entry must match a captured nonbot owner post on that page. Malformed IDs,
+nonowner posts, missing messages, or conflicts with available raw references
+reject the capture. A raw reference from a metadata-capable adapter is also
+supported and validated, including its channel. This is a trusted capture contract,
+not an implemented gateway hook, signature, or source of metadata that the current
+Discord history tool lacks. If trusted inbound metadata is not exposed to the
+caller, leave the mapping absent and accept the conservative block.
+
+For one trusted inbound explicit reply, `runtime context --binding JSON
+--reply-to-message-id TARGET` returns that exact receipt and current task.
+`runtime engagement --binding JSON --pages-file PATH --reply-to-message-id TARGET
+--inbound-message-id ID` requires **both** IDs and verifies the exact owner message
+in fresh history through the target receipt. Flags select only that inbound post;
+observe/confirm still require complete interval captures with any available trusted
+metadata for each post. Unknown/non-coach targets return no coaching context and
+do not count as engagement. Do not substitute a guessed target to avoid null.
+
+Without a target, context returns the latest receipt only while the binding's
+confirmed journal contains one eligible real task. Closed, missing and currently
+snoozed tasks are not implicit candidates. With multiple eligible tasks it returns
+null, including across days: audit receipts are retained, not silently forgotten.
+Unknown-target candidate snapshots use current eligible task data and confirmed
+receipts preceding the original owner post; they never guess the latest task. For
+history-only engagement, use `runtime status` to find the latest confirmed receipt
+anchor and capture through it. Persistent nonbot owner activity can use legacy
+single-task temporal engagement when only one prior task is a candidate; this
+stops prompts for that sole task, but does **not** prove a reply reference or exclude
+unrelated activity. A known unthreaded post similarly uses the latest prior
+receipt. An explicit reference always takes precedence: replies to unrelated
+messages do not engage, and delayed replies to A do not stop B. Every owner post
+is attributed independently; the newest owner's attribution determines the
+engagement return context, while earlier correctly attributed posts can still
+stop their own task sequences. Attachments count; other users and bots do not.
+
+With multiple eligible prior tasks and missing target metadata, engagement returns
+`engaged:false`, `context:null`, `error:"ambiguous-engagement"` and `clarifications`.
+Observe saves incomplete, error-bearing evidence; confirm still records verified
+delivery truth. All three persist a **temporary runtime hold**, not `window_stop`
+or guessed `owner-engaged`. The entire captured owner batch is classified before
+any engagement: a clear earlier post cannot partially suppress a candidate when
+another post is ambiguous. Existing pending holds also prevent candidate engagement.
+No owner posts means no new ambiguity; an existing hold still blocks automation.
+Failed refresh invalidates earlier draft evidence. No typing indicators, read
+receipts, transient/deleted posts, voice presence, or cross-session memory claims
+are made.
+
+### Clarification before mutation
+
+1. On normal inbound only, use the approved binding and inspect `runtime status`.
+   If no clarification is pending, run context and capture real fresh raw history
+   through the latest confirmed receipt; run engagement. If a pending record already
+   exists, inspect its original message and candidate titles first, so the owner's
+   selection is not mistaken for a new task reply.
+2. Ask “Do you mean ‘Draft proposal’ or ‘Book appointment’?” using the returned
+   candidate titles. Do this **before changing task data or marking engagement**.
+   Never require the user to know IDs. Initial clarification is normal conversation;
+   unattended clarification retries require a due native clarification intent and
+   the complete guarded protocol below, never direct sends from preflight/observe.
+3. After an explicit title choice, privately map it to that record's task ID. Obtain
+   the selection post ID and exact owner/profile/account/chat/thread from trusted
+   inbound context. Fetch history from latest through the **oldest candidate receipt**,
+   preserving each whole unmodified Discord result and request-start timestamp in
+   the existing page envelope. Both the immutable original and later nonbot owner
+   selection must be present. Do not invent reply references from words or titles.
+4. Run the guarded command (substitute actual returned values, not these placeholders):
+
+   ```sh
+   python3 /absolute/skill/scripts/task-coach.py --data-dir /approved/store runtime resolve-clarification --binding '{"owner":"OWNER","profile":"PROFILE","account":"ACCOUNT","chat":"CHANNEL","thread":"none"}' --clarification-id CLARIFICATION_ID --task-id TASK_ID --selection-message-id OWNER_SELECTION_ID --pages-file /private/fresh-pages.json
+   ```
+
+   The explicit command asserts the agent has interpreted an **explicit user choice**;
+   the runtime does not classify natural language. Its distinct provenance is
+   `explicit-owner-selection`, never Discord `message_reference` or `reply_targets`.
+   Trusted metadata can still supply real reply targets through the earlier interface;
+   a title selection must never be placed in that metadata channel.
+5. Continue only the returned selected task; completion/snooze/edits still need their
+   normal authorization. The original message, candidate task/receipt snapshots and
+   selected receipt remain immutable. Other task sequences, global pause, window
+   failures, uncertain send journals and delivery receipts are preserved. Attribution
+   to a retained old receipt does not engage a new episode's same task by accident.
+
+Runtime JSON remains version-1 compatible on read: old `{route,outbox}` states are
+accepted without synthesizing a stop or modifying old receipts. The optional strict
+`clarifications` mapping records `pending`, write-ahead `resolving`, then `resolved`,
+or an atomic `dismissed`/`retired` outcome for a still-pending question.
+Optional per-hold `responses` retain captures with only one eligible question.
+Shared answers stay **unassigned** in optional `clarification_responses`, each
+with its captured message and eligible hold IDs; history order never assigns one
+to the oldest question. Before a retry cycle exists, activity is quarantined there
+too. Observe, engagement and confirm deduplicate these captures across restarts.
+An explicit choice/dismissal atomically binds the capture to the intended eligible
+question, then its identity is single-use across holds. Identical completed commands
+return the stored outcome. Unbound captures remain quarantined after retirement;
+neither they nor already-bound response IDs become fresh task replies.
+The directory flock serializes admission and resolution. Before engine engagement,
+the chosen task, selection post and original binding are durably fenced in a
+`resolving` record. Engine suppression commits before releasing the hold; crashes
+leave it held and an identical command finishes safely. Conflicting choices fail,
+including after an engine-commit/runtime-commit interruption. Completed retries return
+the same result without replaying any task operation; they need not refresh history.
+The exact current task must still match its captured snapshot and remain eligible
+on first resolution/recovery. Wrong owner/binding, invalid candidate, edited/missing
+original, stale/incomplete capture or unavailable/changed task refuses without task
+changes. Explain a refusal and leave sends held unless the owner explicitly dismisses
+the still-pending question using the guarded path below. New unknown messages during
+a pending hold are left unclassified (they may be its answer); selected posts are
+not later re-engaged.
+
+### Bounded clarification retries and next-window retirement
+
+An ambiguous reply is a question to retry, never a new task. Runtime preflight
+returns `kind:clarification`, exact `clarification_ids`, candidate snapshots/titles,
+a unique event token and a real confirmed candidate receipt anchor. Compose one
+short question with the candidate titles for those holds. Several questions share
+one bounded retry sequence, not one sequence per candidate or an unbounded fanout.
+Use the existing CLI: `runtime draft`, capture fresh raw pages from latest through
+the returned oldest candidate receipt, `runtime observe`, `runtime dispatch`, then
+fresh positive `runtime confirm`. No new transport, direct preflight sends, or
+operator-asserted verified reminders exist. All candidate receipts (bot/body/time),
+original owner captures, route and coverage must match; unavailable/stale history
+invalidates evidence. Final locked authorization rechecks those raw pages, current
+holds, config, route, pause, engine safety and real min/max delivery spacing.
+
+The optional strict `clarification_retry` state saves the hold set, configuration,
+route, original local window, last clock, slots/tokens and planned/claimed/missed
+states. `max_unanswered_followups` is the shared budget; existing min/max intervals
+choose randomized gaps. The first gap starts at the latest captured ambiguous
+owner timestamp, not an invented receipt for the conversational question. Each
+opportunity lasts at most one minute, capped at window end; expired slots are
+consumed, never redrawn or caught up. Actual prior retry receipt spacing is also
+enforced. Zero budget or no remaining slots means hold without retry. Reopening
+a process does not reset budget or draw slots again. Legacy pending records
+without retry state deterministically derive the same plan from immutable hold
+identities, original timestamp and unchanged config; old receipts stay untouched.
+Absence of retry state supports legacy stores; a present null cycle is invalid.
+Event indexes are integers, never booleans. Claims require matching journaled
+attempts; attempts require the matching cycle event, token, index, expiry and
+hold identities. New drafts fence the exact intent in their cycle event; older
+completed cycles without that optional snapshot remain readable. Replaced cycles
+may retain terminal audit rows, not orphan active attempts. Unknown state, changed
+configuration/route or regressed clocks fail closed.
+
+At the next allowed notification window, preflight retires only still-`pending`
+questions, retaining originals, candidate snapshots, responses and release cutoff.
+This is not midnight rollover: enumerate real instants using saved timezone,
+weekdays and notification window, including weekends and DST gaps/folds. No task
+fields, engagement, completion or snooze is changed. Future ordinary task slots
+can start clean; slots missed under the hold are never revived. The first preflight
+that retires a hold uses the updated locked release cutoff, including a slot exactly
+at window opening; repeating that timestamp cannot change its eligibility. Retired originals
+and processed retry responses are not reclassified, and untargeted old receipts
+before retirement do not immediately recreate stale ambiguity. Exact old task
+reply targets remain explicit attribution evidence, not permission to replay sends.
+
+New owner activity in fresh history suppresses stale retries and wakes the normal
+inbound clarification flow conservatively, not task engagement. `runtime context`
+for an explicit retry receipt returns `kind:clarification`, hold identities and
+snapshots rather than a task. Trusted reply metadata still uses the same exact
+owner/route capture contract. Choice/dismissal use the existing atomic commands;
+responses remain single-use and identical completed outcomes remain idempotent.
+A selection/dismissal admitted while waiting or before final send invalidates the
+old retry intent. The durable sending fence is committed before native send, and
+uncertain attempts remain nonretryable with the same exact-history recovery.
+
+Never retire `resolving`/`resolved` choices or clear global pause, failed/unconfirmed
+delivery, legacy engine safety stops or other protections. A safety-blocked hold
+can remain held beyond the next window; do not edit state to force retirement.
+Every engine sequence is independently checked for claimed/failed events, even
+when a stop string is otherwise safe and no runtime sending row exists (the ordinary
+tick-to-outbox crash gap or a legacy claim). Preparation, next-window retirement
+and final locked send authorization all preserve that uncertainty without repair.
+A positive late retry receipt records delivery truth, never task engagement or a
+new send. Ordinary silent-task follow-ups keep their existing behavior.
+
+### Dismissing a clarification without selecting a task
+
+After “Do you mean ‘Draft proposal’ or ‘Book appointment’?”, the owner may say
+“never mind” or “dismiss that question”. This is explicit conversational intent,
+interpreted by the skill, **not a runtime text classifier**. Inspect pending records
+before engagement on that turn. Use the exact question and trusted later owner post
+ID; fetch fresh raw history from latest through the **oldest candidate receipt**:
+
+```sh
+python3 /absolute/skill/scripts/task-coach.py --data-dir /approved/store runtime dismiss-clarification --binding '{"owner":"OWNER","profile":"PROFILE","account":"ACCOUNT","chat":"CHANNEL","thread":"none"}' --clarification-id CLARIFICATION_ID --dismissal-message-id OWNER_DISMISSAL_ID --pages-file /private/fresh-pages.json
+```
+
+The runtime validates the exact current route/binding, persistent nonbot owner,
+later post ID/timestamp, fresh complete capture and the existing confirmed receipt
+anchor (bot ID, body and delivery time). It does **not** require the original reply
+to remain present/unchanged or tasks to match snapshots or stay eligible: an edited
+or deleted original and edited, closed, snoozed or deleted candidate are precisely
+why safe discard is useful. It never selects/restores a stale task. Do not fabricate
+reply references, IDs or captures. The stored original and candidate snapshots and
+all delivery receipts remain immutable.
+
+Read back `runtime status`; on success say “Okay, I won’t apply that reply; both tasks
+are unchanged” when still true, otherwise “I won’t apply that reply or make any task
+changes.” No task fields or engagement change. No completion, snooze, task cancellation
+or global pause is implied. Only that hold is released; other pending questions,
+pause, failures, legacy stops and uncertain sends remain. Both original and dismissal
+message IDs are processed for this binding, so later engagement/observe/confirm
+cannot re-ask the same question or turn the cancellation into task engagement.
+Later slots remain eligible, never catch up missed ones. For several questions,
+ask which one by candidate titles; unknown IDs never mean discard everything.
+
+Bare “cancel” is ambiguous: ask “Dismiss this question, cancel a named task, or pause
+all check-ins?” before acting. Task cancellation requires its own explicit task
+authorization; a global pause uses `coach pause` with readback. Dismissing a question
+is neither. The runtime trusts the skill's explicit-intent assertion and supplied
+tool captures; it cannot authenticate fabricated operator input.
+
+The atomic `pending` → `dismissed` runtime transaction persists the cancellation
+capture, `explicit-owner-dismissal` audit result and actual release cutoff, with
+no engine write. Identical retries (same binding, clarification and dismissal ID)
+return that immutable result across restart without fresh history. A different
+dismissal, a resolution after dismissal or a dismissal after durable `resolving`/
+`resolved` refuses. **Never undo a write-ahead resolution**: suppression may already
+have committed even if the response was lost. An interrupted `resolving` choice
+must finish via the same guarded resolution; changed candidates may still make
+that recovery refuse and leave the hold in place. Dismissal is not a repair bypass.
+Concurrent dismissal/resolution has one serialized durable winner; the other
+refuses, and no suppressed task is revived. Wrong owner/binding, absent later
+cancellation, missing/mismatched receipt anchor, stale/incomplete history, clock
+regression, reused cancellation messages or malformed state leave the hold intact.
+Freshness is checked under the lock again at release; there is no age bypass after
+waiting for a lock. A completed identical retry only reads the recorded result.
+
+Preflight, draft/dispatch authorization and the final locked send boundary honor the
+hold. A runtime release cutoff prevents sending any event whose slot became due
+before release, even if its ten-minute opportunity remains open; no catch-up, replay,
+rescheduling, or quota filling occurs. Later future slots retain normal eligibility;
+normal missed-slot behavior may end a sequence whose opportunity was skipped.
+Resolving one record does not clear another pending record. No clarification operation
+clears a global pause or an unconfirmed/failed-delivery block. If an in-flight worker
+already journaled `sending`, it stays nonretryable even when a new hold prevents the
+network call. Verify/reconcile independently; do not silently clear that protection.
+Old episodes already permanently stopped as `ambiguous-engagement` remain stopped:
+upgrade and clarification are not restart authorization.
+
+This is a documented agent-mediated normal-inbound instruction and CLI/capture
+contract, **not an implemented gateway hook**. It cannot authenticate fabricated
+operator captures or infer a missing trusted inbound ID. Ask/keep held if that
+context is unavailable. Synthetic tests do not establish live Discord qualification.
 
 ## Final-send authorization and races
 
