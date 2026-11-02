@@ -2,7 +2,7 @@
 import argparse
 from datetime import date, datetime, timezone
 import re
-from contextlib import closing
+from contextlib import closing, contextmanager
 import json
 from pathlib import Path
 import os
@@ -57,6 +57,20 @@ def validate_config(config):
     if config["automation_enabled"] is not False:
         raise ValueError("automation is not available; automation_enabled must be false")
     return config
+
+
+@contextmanager
+def task_store_lock(directory):
+    """Fence task snapshots and writes with the engine/runtime directory lock."""
+    import fcntl
+    from .coaching import safe_path
+    safe_path(directory, True)
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def default_data_dir():
@@ -312,7 +326,7 @@ def run(argv=None):
         else:
             result = engine.stop(args.event_token, args.binding)
     else:
-        with closing(sqlite3.connect(store.resolve().as_uri() + "?mode=rw", uri=True)) as db:
+        with task_store_lock(directory), closing(sqlite3.connect(store.resolve().as_uri() + "?mode=rw", uri=True)) as db:
             db.row_factory = sqlite3.Row
             validate_store(db)
             if args.command == "add":

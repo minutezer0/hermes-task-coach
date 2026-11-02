@@ -278,12 +278,39 @@ For captures used by observe/confirm, preserve raw tool results and carry known
 reply targets separately in the documented `reply_targets` page envelope.
 Current Discord `fetch_messages` does **not** return reply references. Never
 invent them, infer targets from text/order, or equate absent metadata with a known
-unthreaded post. Without a trusted target, context is null once multiple distinct
-tasks have confirmed receipts. Inspect `runtime status` for the latest receipt
-anchor, capture fresh history and run engagement without the optional flags.
-Ambiguous owner activity returns null context and `ambiguous-engagement`, and
-blocks the window rather than attributing it to the newest task. Ask which task
-the owner means, and preserve that block; clarification does not reopen delivery.
+unthreaded post. Without a trusted target, context is null while multiple eligible
+real tasks have confirmed receipts (including retained receipts across days).
+Inspect `runtime status` for an outstanding `clarifications` record **before**
+running engagement on a selection turn. Otherwise use the latest confirmed receipt
+anchor, capture fresh history and run engagement without optional target flags.
+Ambiguous owner activity returns null context, `ambiguous-engagement`, and structured
+`clarifications`: immutable original message and candidate task/receipt snapshots.
+It holds automated sends temporarily; it does not engage any candidate or permanently
+stop the window. Classify a whole captured batch before applying any engagement.
+
+**Ask before changing task data or marking any candidate engaged.** In this normal
+inbound conversation ask naturally using candidate titles, for example, “Do you mean
+‘Draft proposal’ or ‘Book appointment’?” Never demand raw IDs, guess the latest task,
+or interpret ambiguity as completion, snooze, or pause. Do not send clarification
+questions from cron/observe/confirm; those only persist the hold and delivery truth.
+
+When the owner explicitly selects a title, privately map that choice to the exact
+captured task ID and use `runtime resolve-clarification --binding JSON
+--clarification-id ID --task-id TASK_ID --selection-message-id OWNER_MESSAGE_ID
+--pages-file FILE`. Use the trusted inbound ID for that **later bound owner post**.
+Capture fresh raw history from latest through the oldest candidate receipt, including
+both the unchanged original reply and the explicit selection. Selection has distinct
+`explicit-owner-selection` provenance: it is not a Discord reply reference. Do not
+invent `message_reference` or put a title-derived choice into `reply_targets`.
+Only continue the returned selected task. The runtime releases only that ambiguity
+hold, preserves other tasks and pause/failure/uncertain-delivery protections, and
+never catches up missed sends. Identical retries are safe; conflicting selections,
+edited/missing originals, changed/unavailable tasks or wrong bindings refuse without
+task changes. A persisted `resolving` choice remains held after a crash; retry the
+same command to finish it, never select a different candidate. If a candidate changed,
+explain the refusal and keep sends held; do not edit safety records to clear it.
+Legacy windows already stopped as `ambiguous-engagement` are **not** revived by upgrade
+or resolution. This is an agent-mediated normal-inbound workflow, not a new gateway hook.
 Only persistent posts by the bound nonbot owner count; attachments count, other
 users/bots and explicit replies to non-coach messages do not. Context rereads the
 current task; if missing, closed or snoozed, acknowledge that rather than reviving

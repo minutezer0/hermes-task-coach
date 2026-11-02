@@ -17,10 +17,54 @@ class Driver:
     @staticmethod
     def validate_state(state):
         try:
-            if set(state) != {'route', 'outbox'} or not isinstance(state['outbox'], dict):
+            if not {'route', 'outbox'} <= set(state) <= {'route', 'outbox', 'clarifications'} or not isinstance(state['outbox'], dict):
                 raise ValueError
             if state['route'] is not None:
                 validate_binding(state['route']['binding'])
+            records = state.get('clarifications', {})
+            if not isinstance(records, dict):
+                raise ValueError
+            identities = set()
+            for key, record in records.items():
+                required = {'id', 'binding', 'message', 'candidates', 'state'}
+                resolved = {'selected_token', 'selection', 'result', 'resolved_at'} if record['state'] in ('resolving', 'resolved') else set()
+                if set(record) != required | resolved or record['state'] not in ('pending', 'resolving', 'resolved') or record['id'] != key:
+                    raise ValueError
+                if not isinstance(key, str) or not key or record['binding'] != state['route']['binding']:
+                    raise ValueError
+                message = record['message']
+                if (not isinstance(message['id'], str) or not message['id'].isdecimal()
+                        or message['author']['id'] != record['binding']['owner'] or message['author']['bot'] is not False
+                        or not isinstance(message['content'], str) or not isinstance(message['attachments'], list)):
+                    raise ValueError
+                instant(message['timestamp'])
+                identity = (json.dumps(record['binding'], sort_keys=True), message['id'])
+                if identity in identities:
+                    raise ValueError
+                identities.add(identity)
+                candidates = record['candidates']
+                if not isinstance(candidates, list) or len(candidates) < 2 or len({c['task']['id'] for c in candidates}) != len(candidates):
+                    raise ValueError
+                for candidate in candidates:
+                    row = state['outbox'][candidate['token']]
+                    if (set(candidate) != {'token', 'task', 'receipt'} or row['state'] != 'confirmed'
+                            or candidate['receipt'] != row['receipt'] or candidate['task']['id'] != row['task']['id']
+                            or int(candidate['receipt']['message_id']) >= int(message['id'])
+                            or instant(candidate['receipt']['delivered_at']) > instant(message['timestamp'])):
+                        raise ValueError
+                if resolved:
+                    selected = next(c for c in candidates if c['token'] == record['selected_token'])
+                    selection = record['selection']
+                    if instant(record['resolved_at']) < instant(selection['timestamp']):
+                        raise ValueError
+                    result = record['result']
+                    if (selection['author'] != message['author'] or int(selection['id']) <= int(message['id'])
+                            or instant(selection['timestamp']) < instant(message['timestamp'])
+                            or result != dict(engaged=True, context=dict(task=selected['task'], task_id=selected['task']['id'],
+                                 event_token=selected['token'], receipt=selected['receipt'], binding=record['binding']),
+                                 provenance='explicit-owner-selection', clarification_id=key,
+                                 original_message_id=message['id'], selection_message_id=selection['id'])):
+                        raise ValueError
             for token, row in state['outbox'].items():
                 required = {'token', 'fence', 'state', 'body', 'route', 'task', 'intent', 'previous', 'evidence'}
                 if not required <= set(row) <= required | {'attempted_at', 'candidate_id', 'uncertain', 'receipt'}:
@@ -40,7 +84,7 @@ class Driver:
                     if receipt['event_token'] != token or receipt['binding'] != row['route']['binding'] or receipt['cursor'] != receipt['message_id'] or not receipt['message_id']:
                         raise ValueError
                     instant(receipt['delivered_at'])
-        except (KeyError, TypeError, ValueError, AttributeError):
+        except (KeyError, TypeError, ValueError, AttributeError, StopIteration):
             raise ValueError('invalid runtime state') from None
 
     def __init__(self, data_dir):
@@ -212,9 +256,24 @@ class Driver:
         route = runtime['route']
         if any(row['state'] == 'sending' for row in runtime['outbox'].values()):
             return dict(wakeAgent=False, reason='unconfirmed-delivery')
+        if any(c['state'] != 'resolved' for c in runtime.get('clarifications', {}).values()):
+            return dict(wakeAgent=False, reason='pending-clarification')
         if route is None:
             return dict(wakeAgent=False, reason='setup-not-confirmed')
-        return self.coach.prepare(binding=route['binding'], now=now)
+        prepared = self.coach.prepare(binding=route['binding'], now=now)
+        if prepared['wakeAgent']:
+            root = self.coach.status()['episode']
+            sequence = event_episode(root, prepared['intent']['event_token'])
+            event = next(e for e in sequence['events'] if e['token'] == prepared['intent']['event_token'])
+            if self.missed_during_clarification(runtime, route['binding'], event):
+                return dict(wakeAgent=False, reason='clarification-missed-opportunity')
+        return prepared
+
+    @staticmethod
+    def missed_during_clarification(runtime, binding, event):
+        return any(c['binding'] == binding and c['state'] == 'resolved'
+                   and instant(event['slot']) <= instant(c['resolved_at'])
+                   for c in runtime.get('clarifications', {}).values())
 
     def draft(self, token, body, *, now=None):
         prepared = self.preflight(now=now)
@@ -244,6 +303,8 @@ class Driver:
         now = instant(now or datetime.now(UTC))
         from zoneinfo import ZoneInfo
         from .coaching import DAYS, eligible
+        if self.pending_clarifications(row['route']['binding']):
+            raise ValueError('pending clarification; delivery held')
         config = self.coach.config()
         state = self.coach.status()
         root = state['episode']
@@ -254,6 +315,8 @@ class Driver:
         from .cli import validate_config
         if state['paused'] or not episode or root.get('window_stopped') or episode['stopped'] or validate_config(episode['config']) != config or episode['binding'] != row['route']['binding'] or self.status()['route'] != row['route']:
             raise ValueError('episode, pause, configuration or route changed')
+        if event and self.missed_during_clarification(self.status(), row['route']['binding'], event):
+            raise ValueError('clarification-missed-opportunity')
         if not event or event['state'] != 'claimed' or not instant(event['claimed_at']) <= now < min(instant(event['expires']), instant(event['claimed_at']) + timedelta(seconds=120)):
             raise ValueError('claim lease expired or event changed')
         if task != row['task'] or not eligible(task, now) or local.date().isoformat() != episode['day'] or DAYS[local.weekday()] not in config['weekdays'] or not config['notification_start'] <= local.strftime('%H:%M') < config['notification_end']:
@@ -289,15 +352,26 @@ class Driver:
         # timeout, crash, malformed or negative result leaves a nonretryable row.
         try:
             self.authorize(self.row(token, fence), now=now if now_supplied else None)
-            result = subprocess.run([hermes, 'send', '--json', '--to', row['route']['destination'], '--', row['body']],
-                                    capture_output=True, text=True, timeout=45, check=False)
-            payload = json.loads(result.stdout)
-            if not isinstance(payload, dict):
-                raise ValueError('send result must be a JSON object')
-            message_id = payload.get('message_id')
-            if result.returncode or payload.get('success') is not True or payload.get('skipped') or payload.get('error') or not isinstance(message_id, str) or not message_id.strip():
-                raise ValueError('send did not return a positive message identifier')
+            # Serialize the final hold check with the send boundary. A hold
+            # admitted by another worker cannot be bypassed after authorization.
             with self.transaction() as state:
+                if any(c['state'] != 'resolved' for c in state.get('clarifications', {}).values()):
+                    raise ValueError('pending clarification; delivery held')
+                with self.coach._transaction() as engine:
+                    sequence = event_episode(engine['episode'], token)
+                    event = next((e for e in sequence['events'] if e['token'] == token), None) if sequence else None
+                    if event is None:
+                        raise ValueError('event changed at send boundary')
+                    if self.missed_during_clarification(state, row['route']['binding'], event):
+                        raise ValueError('clarification-missed-opportunity')
+                result = subprocess.run([hermes, 'send', '--json', '--to', row['route']['destination'], '--', row['body']],
+                                        capture_output=True, text=True, timeout=45, check=False)
+                payload = json.loads(result.stdout)
+                if not isinstance(payload, dict):
+                    raise ValueError('send result must be a JSON object')
+                message_id = payload.get('message_id')
+                if result.returncode or payload.get('success') is not True or payload.get('skipped') or payload.get('error') or not isinstance(message_id, str) or not message_id.strip():
+                    raise ValueError('send did not return a positive message identifier')
                 state['outbox'][token]['candidate_id'] = message_id
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             with self.transaction() as state:
@@ -347,9 +421,7 @@ class Driver:
                     raise ValueError('conflicting confirmed receipt')
                 return current['receipt']
             current.update(state='confirmed', receipt=receipt)
-        _, ambiguous = self.attribute_engagement(messages[:-1], row['route'])
-        if ambiguous:
-            self.block_ambiguous_engagement(row['route']['binding'])
+        self.attribute_engagement(messages[:-1], row['route'])
         return receipt
 
     def observe(self, token, fence, pages, *, now=None):
@@ -367,48 +439,151 @@ class Driver:
             raise ValueError('history anchor does not match previous receipt')
         fallback = dict(row, token=previous['token'], receipt=receipt)
         targets, ambiguous = self.attribute_engagement(messages[:-1], row['route'], fallback=fallback)
-        engaged = any(target and target['task']['id'] == row['task']['id'] for target in targets)
+        ambiguous = ambiguous or bool(self.pending_clarifications(row['route']['binding']))
+        engaged = not ambiguous and any(target and target['task']['id'] == row['task']['id'] for target in targets)
         evidence = dict(binding=row['route']['binding'], event_token=previous['token'], message_id=receipt['message_id'], cursor=receipt['cursor'], snapshot_id=uuid.uuid4().hex, observed_at=min(instant(p['observed_at']) for p in pages).isoformat(), complete=not ambiguous, engaged=engaged, error='ambiguous-engagement' if ambiguous else None)
         with self.transaction() as state:
             state['outbox'][token]['evidence'] = evidence
-        if engaged:
-            self.coach.stop(token, row['route']['binding'])
-        if ambiguous:
-            self.block_ambiguous_engagement(row['route']['binding'])
         return evidence
 
     def attribute_engagement(self, messages, route, *, fallback=None):
-        """Attribute each owner message independently; absent metadata is not a reply target."""
-        rows = [r for r in self.status()['outbox'].values()
-                if r['route'] == route and r['state'] == 'confirmed']
-        if fallback and not any(r['token'] == fallback['token'] for r in rows):
-            rows.append(fallback)
-        targets, ambiguous = [], False
-        for message in messages:
-            if message['author']['id'] != route['binding']['owner'] or message['author']['bot'] is not False:
-                continue
-            candidates = [r for r in rows if int(r['receipt']['message_id']) < int(message['id'])
-                          and instant(r['receipt']['delivered_at']) <= instant(message['timestamp'])]
-            reference = message.get('message_reference')
-            if reference is not None:
-                candidates = [r for r in candidates if r['receipt']['message_id'] == reference['message_id']
-                              and reference.get('channel_id', route['channel_id']) == route['channel_id']]
-            elif 'message_reference' not in message and len({r['task']['id'] for r in candidates}) > 1:
-                ambiguous = True
-                targets.append(None)
-                continue
-            targets.append(max(candidates, key=lambda r: (instant(r['receipt']['delivered_at']), int(r['receipt']['message_id']))) if candidates else None)
-        episode = self.coach.status()['episode']
-        for target in targets:
-            if target and episode and episode['binding'] == route['binding'] and event_episode(episode, target['token']) is not None:
-                self.coach.stop(target['token'], route['binding'])
-        return targets, ambiguous
+        """Classify the entire batch before engagement; persist only ambiguity holds."""
+        from .coaching import eligible
+        with self.transaction() as runtime:
+            with self.coach._transaction() as state:
+                episode = state['episode']
+                rows = [r for r in runtime['outbox'].values()
+                        if r['route'] == route and r['state'] == 'confirmed']
+                if fallback and not any(r['token'] == fallback['token'] for r in rows):
+                    rows.append(fallback)
+                tasks = {t['id']: t for t in self.coach.tasks()}
+                records = runtime.get('clarifications', {})
+                already_held = any(c['state'] != 'resolved' for c in records.values())
+                targets, ambiguous = [], False
+                for message in messages:
+                    if message['author']['id'] != route['binding']['owner'] or message['author']['bot'] is not False:
+                        continue
+                    if any(c['state'] == 'resolved' and c['selection']['id'] == message['id']
+                           and c['binding'] == route['binding'] for c in records.values()):
+                        continue
+                    existing = next((c for c in records.values()
+                                     if c['binding'] == route['binding'] and c['message']['id'] == message['id']), None)
+                    if existing:
+                        if existing['message'] != message:
+                            raise ValueError('conflicting captured original message')
+                        if existing['state'] != 'resolved':
+                            ambiguous = True
+                            targets.append(None)
+                        else:
+                            targets.append(next((r for r in rows if r['token'] == existing['selected_token']), None))
+                        continue
+                    if already_held:
+                        # A later inbound may be the answer to the outstanding
+                        # question. Leave it unclassified until explicit resolution;
+                        # an in-flight observer must not create a second hold for it.
+                        ambiguous = True
+                        targets.append(None)
+                        continue
+                    candidates = [dict(r, task=tasks[r['task']['id']]) for r in rows
+                                  if r['task']['id'] in tasks and eligible(tasks[r['task']['id']], instant(message['timestamp']))
+                                  and int(r['receipt']['message_id']) < int(message['id'])
+                                  and instant(r['receipt']['delivered_at']) <= instant(message['timestamp'])]
+                    reference = message.get('message_reference')
+                    if reference is not None:
+                        candidates = [r for r in candidates if r['receipt']['message_id'] == reference['message_id']
+                                      and reference.get('channel_id', route['channel_id']) == route['channel_id']]
+                    elif 'message_reference' not in message and len({r['task']['id'] for r in candidates}) > 1:
+                        # One immutable receipt/task snapshot per candidate task.
+                        latest = {}
+                        for r in sorted(candidates, key=lambda r: int(r['receipt']['message_id'])):
+                            latest[r['task']['id']] = dict(token=r['token'], task=r['task'], receipt=r['receipt'])
+                        key = uuid.uuid4().hex
+                        records[key] = dict(id=key, binding=route['binding'], message=message,
+                                            candidates=list(latest.values()), state='pending')
+                        runtime['clarifications'] = records
+                        ambiguous = True
+                        targets.append(None)
+                        continue
+                    targets.append(max(candidates, key=lambda r: int(r['receipt']['message_id'])) if candidates else None)
+                # A clear message cannot consume a candidate while any batch is held.
+                if not ambiguous and not any(c['state'] != 'resolved' for c in records.values()):
+                    for target in targets:
+                        if target and episode and event_episode(episode, target['token']) is not None:
+                            sequence = event_episode(episode, target['token'])
+                            sequence['stopped'] = sequence['stopped'] or 'owner-engaged'
+                return targets, ambiguous
 
-    def block_ambiguous_engagement(self, binding):
-        from .coaching import window_stop
-        with self.coach.transaction() as state:
-            if state['episode'] and state['episode']['binding'] == binding:
-                window_stop(state['episode'], 'ambiguous-engagement')
+    def resolve_clarification(self, *, binding, clarification_id, task_id,
+                              selection_message_id, pages, now=None):
+        """Normal-inbound explicit selection, not manufactured Discord reply metadata."""
+        from .coaching import eligible
+        now_supplied = now is not None
+        validate_binding(binding)
+        if not isinstance(selection_message_id, str) or not selection_message_id.isdecimal():
+            raise ValueError('selection requires an exact captured owner message ID')
+        with self.transaction() as runtime:
+            now = instant(now if now_supplied else datetime.now(UTC))
+            record = runtime.get('clarifications', {}).get(clarification_id)
+            if not record or record['binding'] != binding or runtime['route']['binding'] != binding:
+                raise ValueError('unknown clarification or binding mismatch')
+            candidate = next((c for c in record['candidates'] if c['task']['id'] == task_id), None)
+            if candidate is None or type(task_id) is not int:
+                raise ValueError('selection is not a captured candidate')
+            if record['state'] in ('resolving', 'resolved'):
+                if record['selected_token'] != candidate['token'] or record['selection']['id'] != selection_message_id:
+                    raise ValueError('conflicting clarification resolution')
+                if record['state'] == 'resolved':
+                    return record['result']
+                if now < instant(record['resolved_at']):
+                    raise ValueError('clock regressed during clarification resolution')
+                with self.coach._transaction() as state:
+                    sequence = event_episode(state['episode'], candidate['token'])
+                    task = next((t for t in self.coach.tasks() if t['id'] == task_id), None)
+                    if task != candidate['task'] or not eligible(task, now):
+                        raise ValueError('candidate is no longer valid; preserve the hold')
+                    if sequence and sequence['binding'] == binding:
+                        sequence['stopped'] = sequence['stopped'] or 'owner-engaged'
+                released = now if now_supplied else instant(datetime.now(UTC))
+                record.update(state='resolved', resolved_at=max(now, released).isoformat())
+                return record['result']
+            anchor = min(record['candidates'], key=lambda c: int(c['receipt']['message_id']))['receipt']
+            messages = validate_pages(pages, runtime['route'], anchor['message_id'], now)
+            original = next((m for m in messages if m['id'] == record['message']['id']), None)
+            selection = next((m for m in messages if m['id'] == selection_message_id), None)
+            if original != record['message']:
+                raise ValueError('original captured message changed or missing')
+            if (not selection or selection['author'] != original['author']
+                    or int(selection['id']) <= int(original['id'])
+                    or instant(selection['timestamp']) < instant(original['timestamp'])):
+                raise ValueError('selection must be a later captured bound owner message')
+            # Receipt identity remains independent of attribution and immutable.
+            row = runtime['outbox'].get(candidate['token'])
+            if not row or row['state'] != 'confirmed' or row['receipt'] != candidate['receipt']:
+                raise ValueError('candidate receipt changed')
+            with self.coach._transaction() as state:
+                sequence = event_episode(state['episode'], candidate['token'])
+                task = next((t for t in self.coach.tasks() if t['id'] == task_id), None)
+                if task != candidate['task'] or not eligible(task, now):
+                    raise ValueError('candidate is no longer valid; preserve the hold')
+                # Validate before persisting the write-ahead explicit choice.
+                # No engagement until that choice has committed in the outbox.
+                context = dict(task=task, task_id=task_id, event_token=candidate['token'],
+                               receipt=candidate['receipt'], binding=binding)
+                result = dict(engaged=True, context=context, provenance='explicit-owner-selection',
+                              clarification_id=clarification_id, original_message_id=original['id'],
+                              selection_message_id=selection['id'])
+            record.update(state='resolving', selected_token=candidate['token'], selection=selection,
+                          result=result, resolved_at=now.isoformat())
+        # The committed choice fences competing selections across crashes. The
+        # second transaction changes only that task's engine suppression and
+        # releases the hold after engine commit; an interrupted retry is safe.
+        return self.resolve_clarification(binding=binding, clarification_id=clarification_id,
+            task_id=task_id, selection_message_id=selection_message_id, pages=pages,
+            now=now if now_supplied else None)
+
+    def pending_clarifications(self, binding):
+        return [c for c in self.status().get('clarifications', {}).values()
+                if c['binding'] == binding and c['state'] != 'resolved']
 
     def engagement(self, binding, pages, *, now=None, reply_to_message_id=None, inbound_message_id=None):
         now = instant(now or datetime.now(UTC))
@@ -435,9 +610,9 @@ class Driver:
                 raise ValueError('conflicting reply target metadata')
             owners = [dict(owners[0], message_reference=reference)]
         targets, ambiguous = self.attribute_engagement(owners, row['route'])
-        if ambiguous:
-            self.block_ambiguous_engagement(binding)
-            return dict(engaged=False, context=None, error='ambiguous-engagement')
+        if ambiguous or self.pending_clarifications(binding):
+            return dict(engaged=False, context=None, error='ambiguous-engagement',
+                        clarifications=self.pending_clarifications(binding))
         target = targets[0] if targets else None
         context = self.context(binding, reply_to_message_id=target['receipt']['message_id']) if target else None
         return dict(engaged=target is not None, context=context, error=None)
@@ -458,7 +633,7 @@ class Driver:
         text += '    if process.returncode == 0 and type(candidate.get("wakeAgent")) is bool:\n        result = candidate\n'
         text += 'except Exception:\n    pass\nprint(json.dumps(result))\n'
         prompt = ('Load task-coach and follow its native runtime protocol. Use helper ' + str(helper_path) + ' with --data-dir ' + str(self.directory.resolve()) + '. Re-run runtime preflight. Compose one human check-in only for its current task. For followups fetch and validate fresh complete Discord history before dispatch. Use runtime draft/observe/dispatch/confirm; native Hermes executable ' + str(hermes_path) + '. Never send directly or retry uncertain attempts. No final chat delivery: delivery is handled by the helper.')
-        instruction = ('For normal inbound messages ONLY matching the explicitly confirmed Task Coach binding, load task-coach and use the trusted inbound owner/profile/account/chat/thread with runtime context --binding. If trusted inbound metadata exposes an explicit reply target, pass --reply-to-message-id to context and pass both --reply-to-message-id and --inbound-message-id to runtime engagement with fresh history through the exact target receipt. Otherwise capture fresh history through the latest confirmed receipt from runtime status and run runtime engagement; never infer a missing reply target from text or history order. Follow the documented reply_targets capture interface only for trusted metadata. Null context or ambiguous-engagement is not task attribution: ask which task, preserve delivery blocks, and never fall back to the latest task. Continue only a returned task with one useful next-step question; never mark it done without permission. Honor explicit pause via coach pause. Do not apply this instruction to other users or destinations.')
+        instruction = ('For normal inbound messages ONLY matching the explicitly confirmed Task Coach binding, load task-coach and use the trusted inbound owner/profile/account/chat/thread with runtime context --binding. If trusted inbound metadata exposes an explicit reply target, pass --reply-to-message-id to context and pass both --reply-to-message-id and --inbound-message-id to runtime engagement with fresh history through the exact target receipt. Otherwise capture fresh history through the latest confirmed receipt from runtime status and run runtime engagement; never infer a missing reply target from text or history order. Follow the documented reply_targets capture interface only for trusted metadata. Null context or ambiguous-engagement is not task attribution: before changing task data or marking engagement, ask which task using the pending clarification candidate titles, not raw IDs. The durable pending hold blocks automated sends. Ask only in normal inbound conversation, never via unattended sends. On an explicit owner choice use runtime resolve-clarification --binding with --clarification-id, --task-id for the selected snapshot, --selection-message-id from trusted inbound context and --pages-file containing fresh raw history through the oldest captured candidate receipt. This is explicit-owner-selection provenance, not a Discord reply reference; never add it to reply_targets. Inspect pending records before engagement on a selection turn. Preserve all other delivery blocks, never replay missed sends, and never fall back to the latest task. Continue only a returned task with one useful next-step question; never mark it done without permission. Honor explicit pause via coach pause. Do not apply this instruction to other users or destinations.')
         return dict(script_path=str(script), script_text=text,
                     cron_argv=[str(hermes_path), 'cron', 'create', 'every 1m', prompt, '--name', 'task-coach', '--skill', 'task-coach', '--script', str(script.relative_to(profile / 'scripts')), '--deliver', 'local', '--failure-deliver', 'local', '--paused'],
                     inbound_instruction=instruction, initially_paused=True, live_verified=False)
@@ -468,8 +643,13 @@ class Driver:
         rows = [row for row in self.status()['outbox'].values() if row['route']['binding'] == binding and row['state'] == 'confirmed']
         if reply_to_message_id is not None:
             rows = [row for row in rows if row['receipt']['message_id'] == reply_to_message_id]
-        elif len({row['task']['id'] for row in rows}) > 1:
-            return None
+        else:
+            from .coaching import eligible
+            tasks = {t['id']: t for t in self.coach.tasks()}
+            rows = [r for r in rows if r['task']['id'] in tasks
+                    and eligible(tasks[r['task']['id']], datetime.now(UTC))]
+            if len({row['task']['id'] for row in rows}) > 1:
+                return None
         if not rows:
             return None
         row = max(rows, key=lambda r: (instant(r['receipt']['delivered_at']), int(r['receipt']['message_id'])))
@@ -590,6 +770,12 @@ def add_parser(commands):
             operation.add_argument('--pages-file', type=Path, required=True)
             if name == 'confirm':
                 operation.add_argument('--message-id')
+    resolve = operations.add_parser('resolve-clarification', help='Normal-inbound explicit owner selection; never invent a reply reference')
+    resolve.add_argument('--binding', type=json.loads, required=True)
+    resolve.add_argument('--clarification-id', required=True)
+    resolve.add_argument('--task-id', type=int, required=True)
+    resolve.add_argument('--selection-message-id', required=True)
+    resolve.add_argument('--pages-file', type=Path, required=True)
     for name in ('context', 'engagement'):
         operation = operations.add_parser(name)
         operation.add_argument('--binding', type=json.loads, required=True)
@@ -621,6 +807,9 @@ def run_cli(directory, args):
     if operation == 'context':
         return driver.context(args.binding, reply_to_message_id=args.reply_to_message_id)
     pages = json.loads(args.pages_file.read_text(encoding='utf-8'))
+    if operation == 'resolve-clarification':
+        return driver.resolve_clarification(binding=args.binding, clarification_id=args.clarification_id,
+            task_id=args.task_id, selection_message_id=args.selection_message_id, pages=pages)
     if operation == 'engagement':
         return driver.engagement(args.binding, pages, reply_to_message_id=args.reply_to_message_id, inbound_message_id=args.inbound_message_id)
     if operation == 'confirm':

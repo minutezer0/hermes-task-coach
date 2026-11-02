@@ -177,7 +177,9 @@ class ReplyRoutingTest(unittest.TestCase):
         draft = self.send(followup, '250', reply='100', raw_reply=True)
         self.assertEqual(runtime.row(draft['token'], draft['fence'])['state'], 'confirmed')
         self.assertEqual(runtime.coach.status()['deliveries'], 3)
-        self.assertEqual(runtime.coach.status()['episode']['window_stopped'], 'ambiguous-engagement')
+        self.assertIsNone(runtime.coach.status()['episode']['window_stopped'])
+        self.assertEqual(runtime.pending_clarifications(BINDING)[0]['message']['id'], '300')
+        self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
         self.assertFalse(runtime.preflight(now=self.sequences[1]['events'][2]['slot'])['wakeAgent'])
 
     def test_real_shaped_confirm_with_trusted_a_target_keeps_b(self):

@@ -362,8 +362,11 @@ metadata for each post. Unknown/non-coach targets return no coaching context and
 do not count as engagement. Do not substitute a guessed target to avoid null.
 
 Without a target, context returns the latest receipt only while the binding's
-confirmed journal contains one distinct task. With multiple tasks it returns null,
-including across days: audit receipts are retained, not silently forgotten. For
+confirmed journal contains one eligible real task. Closed, missing and currently
+snoozed tasks are not implicit candidates. With multiple eligible tasks it returns
+null, including across days: audit receipts are retained, not silently forgotten.
+Unknown-target candidate snapshots use current eligible task data and confirmed
+receipts preceding the original owner post; they never guess the latest task. For
 history-only engagement, use `runtime status` to find the latest confirmed receipt
 anchor and capture through it. Persistent nonbot owner activity can use legacy
 single-task temporal engagement when only one prior task is a candidate; this
@@ -375,16 +378,84 @@ is attributed independently; the newest owner's attribution determines the
 engagement return context, while earlier correctly attributed posts can still
 stop their own task sequences. Attachments count; other users and bots do not.
 
-With multiple prior tasks and missing target metadata, the driver cannot safely
-attribute the owner post. Engagement returns `engaged:false`, `context:null`,
-`error:"ambiguous-engagement"`; observe saves incomplete, error-bearing evidence;
-confirm still records the verified delivery truth. All three block the current
-window with `ambiguous-engagement`, not a guessed `owner-engaged` task. Later
-captures/clarification do not revive the stopped window. No owner posts means no
-attribution ambiguity and complete negative evidence can authorize followups.
-Failed refresh still invalidates earlier draft evidence. No typing indicators,
-read receipts, transient/deleted posts, voice presence, or cross-session memory
-claims are made.
+With multiple eligible prior tasks and missing target metadata, engagement returns
+`engaged:false`, `context:null`, `error:"ambiguous-engagement"` and `clarifications`.
+Observe saves incomplete, error-bearing evidence; confirm still records verified
+delivery truth. All three persist a **temporary runtime hold**, not `window_stop`
+or guessed `owner-engaged`. The entire captured owner batch is classified before
+any engagement: a clear earlier post cannot partially suppress a candidate when
+another post is ambiguous. Existing pending holds also prevent candidate engagement.
+No owner posts means no new ambiguity; an existing hold still blocks automation.
+Failed refresh invalidates earlier draft evidence. No typing indicators, read
+receipts, transient/deleted posts, voice presence, or cross-session memory claims
+are made.
+
+### Clarification before mutation
+
+1. On normal inbound only, use the approved binding and inspect `runtime status`.
+   If no clarification is pending, run context and capture real fresh raw history
+   through the latest confirmed receipt; run engagement. If a pending record already
+   exists, inspect its original message and candidate titles first, so the owner's
+   selection is not mistaken for a new task reply.
+2. Ask “Do you mean ‘Draft proposal’ or ‘Book appointment’?” using the returned
+   candidate titles. Do this **before changing task data or marking engagement**.
+   Never require the user to know IDs. Never send an extra unattended clarification:
+   observe/confirm only record the hold; a normal conversation asks the question.
+3. After an explicit title choice, privately map it to that record's task ID. Obtain
+   the selection post ID and exact owner/profile/account/chat/thread from trusted
+   inbound context. Fetch history from latest through the **oldest candidate receipt**,
+   preserving each whole unmodified Discord result and request-start timestamp in
+   the existing page envelope. Both the immutable original and later nonbot owner
+   selection must be present. Do not invent reply references from words or titles.
+4. Run the guarded command (substitute actual returned values, not these placeholders):
+
+   ```sh
+   python3 /absolute/skill/scripts/task-coach.py --data-dir /approved/store runtime resolve-clarification --binding '{"owner":"OWNER","profile":"PROFILE","account":"ACCOUNT","chat":"CHANNEL","thread":"none"}' --clarification-id CLARIFICATION_ID --task-id TASK_ID --selection-message-id OWNER_SELECTION_ID --pages-file /private/fresh-pages.json
+   ```
+
+   The explicit command asserts the agent has interpreted an **explicit user choice**;
+   the runtime does not classify natural language. Its distinct provenance is
+   `explicit-owner-selection`, never Discord `message_reference` or `reply_targets`.
+   Trusted metadata can still supply real reply targets through the earlier interface;
+   a title selection must never be placed in that metadata channel.
+5. Continue only the returned selected task; completion/snooze/edits still need their
+   normal authorization. The original message, candidate task/receipt snapshots and
+   selected receipt remain immutable. Other task sequences, global pause, window
+   failures, uncertain send journals and delivery receipts are preserved. Attribution
+   to a retained old receipt does not engage a new episode's same task by accident.
+
+Runtime JSON remains version-1 compatible on read: old `{route,outbox}` states are
+accepted without synthesizing a stop or modifying old receipts. The optional strict
+`clarifications` mapping records `pending`, write-ahead `resolving`, then `resolved`.
+The directory flock serializes admission and resolution. Before engine engagement,
+the chosen task, selection post and original binding are durably fenced in a
+`resolving` record. Engine suppression commits before releasing the hold; crashes
+leave it held and an identical command finishes safely. Conflicting choices fail,
+including after an engine-commit/runtime-commit interruption. Completed retries return
+the same result without replaying any task operation; they need not refresh history.
+The exact current task must still match its captured snapshot and remain eligible
+on first resolution/recovery. Wrong owner/binding, invalid candidate, edited/missing
+original, stale/incomplete capture or unavailable/changed task refuses without task
+changes. Explain a refusal and leave sends held; no automatic cancellation/reset or
+hold-discard command is provided. New unknown messages during a pending hold are
+left unclassified (they may be its answer); a selected post is not later re-engaged.
+
+Preflight, draft/dispatch authorization and the final locked send boundary honor the
+hold. A runtime release cutoff prevents sending any event whose slot became due
+before release, even if its ten-minute opportunity remains open; no catch-up, replay,
+rescheduling, or quota filling occurs. Later future slots retain normal eligibility;
+normal missed-slot behavior may end a sequence whose opportunity was skipped.
+Resolving one record does not clear another pending record. No clarification operation
+clears a global pause or an unconfirmed/failed-delivery block. If an in-flight worker
+already journaled `sending`, it stays nonretryable even when a new hold prevents the
+network call. Verify/reconcile independently; do not silently clear that protection.
+Old episodes already permanently stopped as `ambiguous-engagement` remain stopped:
+upgrade and clarification are not restart authorization.
+
+This is a documented agent-mediated normal-inbound instruction and CLI/capture
+contract, **not an implemented gateway hook**. It cannot authenticate fabricated
+operator captures or infer a missing trusted inbound ID. Ask/keep held if that
+context is unavailable. Synthetic tests do not establish live Discord qualification.
 
 ## Final-send authorization and races
 

@@ -86,10 +86,16 @@ to stop Discord follow-ups; replies in a different TUI session are not detected.
 A reply arriving during an already-authorized network send can race with that
 message; the runtime does not promise atomic cancellation. Current Discord history
 captures omit reply references. Delayed replies can be attributed to an earlier
-task only with trusted inbound target metadata (see the runtime guide's optional
-CLI flags and `reply_targets` envelope). Without it, ambiguous multi-task owner
-activity blocks further sends and returns no task context, rather than guessing
-the latest task. Explicit replies to unrelated messages do not engage coaching.
+task with trusted inbound target metadata (see the runtime guide's optional
+CLI flags and `reply_targets` envelope), or a later explicit owner clarification.
+Without a clear target, eligible multi-task replies temporarily hold automated
+sends and ask which task **by title in normal conversation**, before changing task
+data or engaging any candidate. The guarded `runtime resolve-clarification` command
+binds the original reply and explicit owner selection to immutable candidate snapshots;
+it releases only that ambiguity hold, never other delivery protections or missed
+sends. Selection is not manufactured Discord reply metadata. Existing windows
+permanently blocked by older code are not revived. Explicit replies to unrelated
+messages do not engage coaching. See [the end-to-end clarification flow](skills/task-coach/references/native-runtime.md#clarification-before-mutation).
 
 ## Minute tick is not message cadence
 
