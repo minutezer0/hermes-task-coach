@@ -133,6 +133,12 @@ Read back the exact wrapper, paused job (including prompt, script, skill,
 agent mode, and both delivery targets), and scoped instruction. Installation
 approval is neither live-test nor ongoing-send permission.
 
+Before offering any timed test, inspect the installed helper's actual commands
+and current episode/outbox eligibility; an onboarding question must not offer an
+action the runtime cannot safely perform. A request to change onboarding wording
+is not permission to start a timer or create a reminder outside the guarded
+runtime. Keep optional development experiments out of the normal setup flow.
+
 For a separately authorized **one-check-in live test**, keep native cron paused,
 finish preferences and verify an eligible task, then use `runtime prepare-test
 --confirm-test` **before first preflight**. This prepares one due opener inside the
@@ -174,6 +180,23 @@ one useful question. Never show IDs, route/fence/event tokens, status blocks,
 “engagement recorded”, or test bookkeeping unless requested or needed to explain
 a problem. Keep audit data in tools. Setup/checkpoint summaries and explicitly
 requested status/problems are the exceptions; do not append a report to each reply.
+
+## Maintaining and resetting an installation
+
+When improving this skill for publication, compare the installed skill with the
+development checkout before review: installed-only onboarding corrections must
+not disappear from the PR or be overwritten during deployment. Include those
+changes in review and publish only generic procedures, not live task data or
+private route identifiers. Reconcile any worker's returned edits against the
+latest user scope before committing; a queued cancellation may arrive too late.
+
+For an explicitly requested fresh-start reset, distinguish task data from installed
+code and scheduling artifacts. Never interpret a skill reinstall as a data reset.
+Honor an explicit no-backup choice; otherwise establish backup scope before
+removal. Keep unrelated task systems and reminders intact. Follow the bounded
+[installation reset procedure](references/installation-reset.md). A user-requested
+fresh-start test is a lifecycle operation, not a way to bypass a refused event or
+retry an uncertain send.
 
 ## Task commands
 
@@ -217,10 +240,17 @@ low-level `coach tick`/`ack` interface, for unattended delivery.
    retry an attempted/uncertain event, including after a crash or restart.
 5. Fetch real history again, from latest to the returned message ID, and call
    `runtime confirm --event-token TOKEN --fence FENCE --pages-file FILE`.
+   Plan durable raw-page capture before dispatch: preserve each entire unmodified
+   tool result with its request-start timestamp in a private pages file immediately
+   after fetching. A visible matching message is not a persisted runtime receipt;
+   searching for an automatic tool-output archive is not a substitute for capture.
    Exit zero, skipped sends, intent output and missing IDs are not receipts.
    Exact bot/body/time/route readback is required. Only a journaled attempt may be
    reconciled late; this records truth without reviving a stopped episode.
-6. No duplicate final-message delivery to the destination: the helper owns sends.
+6. No duplicate delivery to the destination: the helper owns sends. Do not echo
+   the drafted check-in in assistant commentary before dispatch, or repeat its
+   question in a final response; ordinary commentary is itself a chat message.
+   A separate brief verification checkpoint may report actual test results.
 
 ## Normal inbound continuation and explicit pause
 
@@ -231,9 +261,22 @@ scoped instruction, use trusted inbound identifiers to run `runtime context
 --binding JSON --pages-file FILE`. Only persistent posts by the bound nonbot owner
 count; attachments count, unrelated users/bots do not. Context rereads the current
 task; if missing, closed or snoozed, acknowledge that rather than reviving the
-old draft. Continue the returned task
-by asking one useful next-step/blocker question, offering concrete help and
-respecting a decline. Do not mark it done without permission.
+old draft. If a reply interrupts dispatch/confirmation and context is null, inspect
+`runtime status` before treating null as no coaching history: an unconfirmed
+`sending` row may exist. Reconcile that exact attempt using fresh raw history and
+`runtime confirm`, then run context/engagement; never resend or claim engagement
+was recorded merely because the owner replied. If reconciliation remains blocked,
+state the verification limit rather than declaring the test passed or moving past
+the verification checkpoint into ongoing activation.
+
+Continue the returned task by asking one useful next-step/blocker question,
+offering concrete help and respecting a decline. A request to revisit tomorrow
+is a deferral, not completion or approval to enable a paused schedule. Resolve
+its date in the configured timezone and derive the offset for the target date
+rather than copying today's offset across a daylight-saving transition. Read
+back any authorized snooze, explain whether automated check-ins are still paused,
+and do not promise an exact send at the snooze boundary: it only restores task
+eligibility. Do not mark it done without permission.
 
 An explicit pause request uses `coach pause` and readback via `coach status`.
 `coach resume` clears the global pause but never revives today's stopped episode.
