@@ -28,4 +28,5 @@ include = ["task_coach*"]
     "skills/task-coach/scripts/task_coach/cli.py",
     "skills/task-coach/scripts/task_coach/coaching.py",
     "skills/task-coach/scripts/task_coach/driver.py",
+    "skills/task-coach/scripts/task_coach/clarification.py",
 ]

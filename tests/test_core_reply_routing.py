@@ -82,7 +82,17 @@ class ReplyRoutingTest(unittest.TestCase):
         self.assertIsNone(result['context'])
         self.assertEqual(result['error'], 'ambiguous-engagement')
         self.assertNotEqual(runtime.coach.status()['episode']['next_tasks'][0]['stopped'], 'owner-engaged')
-        self.assertFalse(runtime.preflight(now=self.sequences[1]['events'][1]['slot'])['wakeAgent'])
+        # PR6 permits only the question retry here, never B's task follow-up.
+        before = runtime.coach.status()
+        due = self.sequences[1]['events'][1]
+        offered = runtime.preflight(now=due['slot'])
+        self.assertTrue(offered['wakeAgent'])
+        self.assertEqual(offered['intent']['kind'], 'clarification')
+        self.assertNotEqual(offered['intent']['event_token'], due['token'])
+        self.assertEqual(offered['intent']['clarification_ids'], [runtime.pending_clarifications(BINDING)[0]['id']])
+        with self.assertRaises(ValueError):
+            runtime.draft(due['token'], 'Must not send a task follow-up', now=due['slot'])
+        self.assertEqual(runtime.coach.status(), before)
 
     def test_observe_delayed_a_reply_does_not_stop_b(self):
         runtime, first, second = self.open_b()
@@ -180,7 +190,17 @@ class ReplyRoutingTest(unittest.TestCase):
         self.assertIsNone(runtime.coach.status()['episode']['window_stopped'])
         self.assertEqual(runtime.pending_clarifications(BINDING)[0]['message']['id'], '300')
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
-        self.assertFalse(runtime.preflight(now=self.sequences[1]['events'][2]['slot'])['wakeAgent'])
+        # PR6 permits only the question retry here, never B's task follow-up.
+        before = runtime.coach.status()
+        due = self.sequences[1]['events'][2]
+        offered = runtime.preflight(now=due['slot'])
+        self.assertTrue(offered['wakeAgent'])
+        self.assertEqual(offered['intent']['kind'], 'clarification')
+        self.assertNotEqual(offered['intent']['event_token'], due['token'])
+        self.assertEqual(offered['intent']['clarification_ids'], [runtime.pending_clarifications(BINDING)[0]['id']])
+        with self.assertRaises(ValueError):
+            runtime.draft(due['token'], 'Must not send a task follow-up', now=due['slot'])
+        self.assertEqual(runtime.coach.status(), before)
 
     def test_real_shaped_confirm_with_trusted_a_target_keeps_b(self):
         runtime, first, second = self.open_b()

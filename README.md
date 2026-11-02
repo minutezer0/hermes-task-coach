@@ -90,7 +90,21 @@ task with trusted inbound target metadata (see the runtime guide's optional
 CLI flags and `reply_targets` envelope), or a later explicit owner clarification.
 Without a clear target, eligible multi-task replies temporarily hold automated
 sends and ask which task **by title in normal conversation**, before changing task
-data or engaging any candidate. The guarded `runtime resolve-clarification` command
+data or engaging any candidate. Bounded clarification retries reuse the configured
+unanswered-follow-up budget and randomized min/max spacing in the current window.
+They ask using candidate titles through the same native draft/history/dispatch/
+positive-receipt protocol, never a detached reminder. Slots and counts survive
+restart; missed retries and missed task sends never catch up. When unanswered, the
+hold lasts until the next allowed notification window, then pending questions are
+retired with audit retained and tasks, engagement, completion and snoozes unchanged.
+Timezone, allowed weekdays and DST determine that window—not midnight. A zero
+follow-up budget means no automatic retries. Resolving/resolved selections and
+pause, failure, uncertain-delivery and other safety blocks are never cleared by
+retirement; clock/configuration/route changes fail closed. A reply to a retry
+receipt returns to its question, never automatic task engagement. Shared answers
+remain unassigned until an explicit selection/dismissal binds the intended question
+atomically; the same reply cannot then be reused for another hold. Unresolved engine
+claims/failures block retry sends and retirement even without an outbox sending row. The guarded `runtime resolve-clarification` command
 binds the original reply and explicit owner selection to immutable candidate snapshots;
 it releases only that ambiguity hold, never other delivery protections or missed
 sends. Selection is not manufactured Discord reply metadata. “Never mind” or

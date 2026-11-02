@@ -399,8 +399,9 @@ are made.
    selection is not mistaken for a new task reply.
 2. Ask “Do you mean ‘Draft proposal’ or ‘Book appointment’?” using the returned
    candidate titles. Do this **before changing task data or marking engagement**.
-   Never require the user to know IDs. Never send an extra unattended clarification:
-   observe/confirm only record the hold; a normal conversation asks the question.
+   Never require the user to know IDs. Initial clarification is normal conversation;
+   unattended clarification retries require a due native clarification intent and
+   the complete guarded protocol below, never direct sends from preflight/observe.
 3. After an explicit title choice, privately map it to that record's task ID. Obtain
    the selection post ID and exact owner/profile/account/chat/thread from trusted
    inbound context. Fetch history from latest through the **oldest candidate receipt**,
@@ -427,7 +428,16 @@ are made.
 Runtime JSON remains version-1 compatible on read: old `{route,outbox}` states are
 accepted without synthesizing a stop or modifying old receipts. The optional strict
 `clarifications` mapping records `pending`, write-ahead `resolving`, then `resolved`,
-or an atomic `dismissed` outcome for a still-pending question.
+or an atomic `dismissed`/`retired` outcome for a still-pending question.
+Optional per-hold `responses` retain captures with only one eligible question.
+Shared answers stay **unassigned** in optional `clarification_responses`, each
+with its captured message and eligible hold IDs; history order never assigns one
+to the oldest question. Before a retry cycle exists, activity is quarantined there
+too. Observe, engagement and confirm deduplicate these captures across restarts.
+An explicit choice/dismissal atomically binds the capture to the intended eligible
+question, then its identity is single-use across holds. Identical completed commands
+return the stored outcome. Unbound captures remain quarantined after retirement;
+neither they nor already-bound response IDs become fresh task replies.
 The directory flock serializes admission and resolution. Before engine engagement,
 the chosen task, selection post and original binding are durably fenced in a
 `resolving` record. Engine suppression commits before releasing the hold; crashes
@@ -441,6 +451,72 @@ changes. Explain a refusal and leave sends held unless the owner explicitly dism
 the still-pending question using the guarded path below. New unknown messages during
 a pending hold are left unclassified (they may be its answer); selected posts are
 not later re-engaged.
+
+### Bounded clarification retries and next-window retirement
+
+An ambiguous reply is a question to retry, never a new task. Runtime preflight
+returns `kind:clarification`, exact `clarification_ids`, candidate snapshots/titles,
+a unique event token and a real confirmed candidate receipt anchor. Compose one
+short question with the candidate titles for those holds. Several questions share
+one bounded retry sequence, not one sequence per candidate or an unbounded fanout.
+Use the existing CLI: `runtime draft`, capture fresh raw pages from latest through
+the returned oldest candidate receipt, `runtime observe`, `runtime dispatch`, then
+fresh positive `runtime confirm`. No new transport, direct preflight sends, or
+operator-asserted verified reminders exist. All candidate receipts (bot/body/time),
+original owner captures, route and coverage must match; unavailable/stale history
+invalidates evidence. Final locked authorization rechecks those raw pages, current
+holds, config, route, pause, engine safety and real min/max delivery spacing.
+
+The optional strict `clarification_retry` state saves the hold set, configuration,
+route, original local window, last clock, slots/tokens and planned/claimed/missed
+states. `max_unanswered_followups` is the shared budget; existing min/max intervals
+choose randomized gaps. The first gap starts at the latest captured ambiguous
+owner timestamp, not an invented receipt for the conversational question. Each
+opportunity lasts at most one minute, capped at window end; expired slots are
+consumed, never redrawn or caught up. Actual prior retry receipt spacing is also
+enforced. Zero budget or no remaining slots means hold without retry. Reopening
+a process does not reset budget or draw slots again. Legacy pending records
+without retry state deterministically derive the same plan from immutable hold
+identities, original timestamp and unchanged config; old receipts stay untouched.
+Absence of retry state supports legacy stores; a present null cycle is invalid.
+Event indexes are integers, never booleans. Claims require matching journaled
+attempts; attempts require the matching cycle event, token, index, expiry and
+hold identities. New drafts fence the exact intent in their cycle event; older
+completed cycles without that optional snapshot remain readable. Replaced cycles
+may retain terminal audit rows, not orphan active attempts. Unknown state, changed
+configuration/route or regressed clocks fail closed.
+
+At the next allowed notification window, preflight retires only still-`pending`
+questions, retaining originals, candidate snapshots, responses and release cutoff.
+This is not midnight rollover: enumerate real instants using saved timezone,
+weekdays and notification window, including weekends and DST gaps/folds. No task
+fields, engagement, completion or snooze is changed. Future ordinary task slots
+can start clean; slots missed under the hold are never revived. The first preflight
+that retires a hold uses the updated locked release cutoff, including a slot exactly
+at window opening; repeating that timestamp cannot change its eligibility. Retired originals
+and processed retry responses are not reclassified, and untargeted old receipts
+before retirement do not immediately recreate stale ambiguity. Exact old task
+reply targets remain explicit attribution evidence, not permission to replay sends.
+
+New owner activity in fresh history suppresses stale retries and wakes the normal
+inbound clarification flow conservatively, not task engagement. `runtime context`
+for an explicit retry receipt returns `kind:clarification`, hold identities and
+snapshots rather than a task. Trusted reply metadata still uses the same exact
+owner/route capture contract. Choice/dismissal use the existing atomic commands;
+responses remain single-use and identical completed outcomes remain idempotent.
+A selection/dismissal admitted while waiting or before final send invalidates the
+old retry intent. The durable sending fence is committed before native send, and
+uncertain attempts remain nonretryable with the same exact-history recovery.
+
+Never retire `resolving`/`resolved` choices or clear global pause, failed/unconfirmed
+delivery, legacy engine safety stops or other protections. A safety-blocked hold
+can remain held beyond the next window; do not edit state to force retirement.
+Every engine sequence is independently checked for claimed/failed events, even
+when a stop string is otherwise safe and no runtime sending row exists (the ordinary
+tick-to-outbox crash gap or a legacy claim). Preparation, next-window retirement
+and final locked send authorization all preserve that uncertainty without repair.
+A positive late retry receipt records delivery truth, never task engagement or a
+new send. Ordinary silent-task follow-ups keep their existing behavior.
 
 ### Dismissing a clarification without selecting a task
 

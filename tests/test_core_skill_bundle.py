@@ -26,7 +26,9 @@ class SkillBundleTest(unittest.TestCase):
         allowed = ["skills/task-coach/SKILL.md", "skills/task-coach/references/LICENSE",
                    "skills/task-coach/scripts/task-coach.py", "skills/task-coach/scripts/task_coach/__init__.py",
                    "skills/task-coach/scripts/task_coach/__main__.py", "skills/task-coach/scripts/task_coach/cli.py",
-                   "tests/test_core_installed_skill.py", "tests/test_core_wheel.py"]
+                   "tests/test_core_installed_skill.py", "tests/test_core_wheel.py",
+                   "skills/task-coach/scripts/task_coach/clarification.py",
+                   "tests/test_core_clarification_retry.py"]
         blocked = ["skills/task-coach/scripts/task-coach", "skills/task-coach/scripts/helper.so",
                    "skills/task-coach/scripts/task_coach/cli.pyc", "skills/task-coach/scripts/task_coach/tasks.sqlite3",
                    "skills/task-coach/config.json", "skills/task-coach/references/tasks.json",
@@ -86,6 +88,7 @@ class SkillBundleTest(unittest.TestCase):
                 "skills/task-coach/scripts/task_coach/cli.py",
                 "skills/task-coach/scripts/task_coach/coaching.py",
                 "skills/task-coach/scripts/task_coach/driver.py",
+                "skills/task-coach/scripts/task_coach/clarification.py",
             ],
         }
         self.assertEqual(files, expected)
