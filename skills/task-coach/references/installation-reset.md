@@ -16,6 +16,15 @@ Do not reset storage to evade a runtime refusal, replay protection or uncertaint
 4. List native cron jobs, locate the exact Task Coach job, and verify it is paused
    with no active execution claim. If it must be paused, use the supported cron
    command and read back that job. Do not pause or modify unrelated reminders.
+   Quiesce all Task Coach writers before continuing: normal inbound conversations,
+   manual CLI commands, background workers and any other process using this store.
+   Wait for existing operations to finish and prevent new operations from starting.
+   Keep them quiesced through inventory, deletion and final readback. Pausing cron
+   alone is insufficient: the directory flock does not exclude ordinary task/settings
+   writers. Establish exclusive access using the host's supported maintenance controls;
+   do not assume a chat request or a lock file enforces it. If exclusive access cannot
+   be established, stop without deleting. Do not change unrelated services without
+   separate authorization.
 5. Inventory the approved data directory without following symlinks. The normal
    store contains `config.json`, `tasks.sqlite3`, `coach.sqlite3` and
    `outbox.sqlite3`; actual inventory is authoritative. Stop for unknown files,
