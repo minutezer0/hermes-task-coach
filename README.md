@@ -93,8 +93,18 @@ sends and ask which task **by title in normal conversation**, before changing ta
 data or engaging any candidate. The guarded `runtime resolve-clarification` command
 binds the original reply and explicit owner selection to immutable candidate snapshots;
 it releases only that ambiguity hold, never other delivery protections or missed
-sends. Selection is not manufactured Discord reply metadata. Existing windows
-permanently blocked by older code are not revived. Explicit replies to unrelated
+sends. Selection is not manufactured Discord reply metadata. “Never mind” or
+“dismiss that question” instead uses guarded `runtime dismiss-clarification`:
+the skill binds explicit dismissal to the exact pending question and a fresh
+captured later owner message. Neither task is selected, edited or engaged. The
+original may be edited/deleted and candidates changed/unavailable; their audit
+snapshots and delivery receipts stay immutable. Only that hold is released, future
+slots remain eligible and missed sends never catch up. “Cancel” alone prompts a
+question: dismiss the clarification, cancel a named task, or pause all check-ins?
+Wrong bindings, stale/missing captures and missing receipt anchors refuse safely.
+A durable resolving/resolved selection cannot be undone by dismissal because its
+suppression may already have committed; retry only the same guarded resolution.
+Existing windows permanently blocked by older code are not revived. Explicit replies to unrelated
 messages do not engage coaching. See [the end-to-end clarification flow](skills/task-coach/references/native-runtime.md#clarification-before-mutation).
 
 ## Minute tick is not message cadence

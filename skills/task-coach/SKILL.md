@@ -281,8 +281,8 @@ invent them, infer targets from text/order, or equate absent metadata with a kno
 unthreaded post. Without a trusted target, context is null while multiple eligible
 real tasks have confirmed receipts (including retained receipts across days).
 Inspect `runtime status` for an outstanding `clarifications` record **before**
-running engagement on a selection turn. Otherwise use the latest confirmed receipt
-anchor, capture fresh history and run engagement without optional target flags.
+running engagement on a selection or dismissal turn. Otherwise use the latest
+confirmed receipt anchor, capture fresh history and run engagement without optional target flags.
 Ambiguous owner activity returns null context, `ambiguous-engagement`, and structured
 `clarifications`: immutable original message and candidate task/receipt snapshots.
 It holds automated sends temporarily; it does not engage any candidate or permanently
@@ -309,8 +309,35 @@ edited/missing originals, changed/unavailable tasks or wrong bindings refuse wit
 task changes. A persisted `resolving` choice remains held after a crash; retry the
 same command to finish it, never select a different candidate. If a candidate changed,
 explain the refusal and keep sends held; do not edit safety records to clear it.
-Legacy windows already stopped as `ambiguous-engagement` are **not** revived by upgrade
-or resolution. This is an agent-mediated normal-inbound workflow, not a new gateway hook.
+If the owner answers “never mind” or “dismiss that question” to the clarification,
+respect that explicit dismissal rather than making them choose a task. Inspect the
+pending record and use `runtime dismiss-clarification --binding JSON
+--clarification-id ID --dismissal-message-id OWNER_MESSAGE_ID --pages-file FILE`.
+Use the exact trusted **later nonbot owner message** and fresh real raw history
+from latest through the oldest candidate receipt; do not manufacture IDs, captures,
+`message_reference` or `reply_targets`. The original may have been edited/deleted
+and candidate tasks changed, closed, snoozed or deleted: dismissal discards that
+reply, not a task snapshot, so it does not require them to remain unchanged.
+After successful readback say naturally, “Okay, I won’t apply that reply; both tasks
+are unchanged.” Do not claim unchanged tasks if another operation changed them;
+in that case say “I won’t apply that reply or make any task changes.” Do not ask
+which task again for the dismissed reply. This records an immutable dismissed
+outcome, releases **only that hold**, and marks neither task engaged. No task
+fields, completion, snooze, task cancellation, global pause or delivery protections
+are changed. Later future slots remain eligible; missed slots are never caught up.
+If several questions are pending, ask which question using candidate titles, not
+raw IDs; never silently discard all holds. If the user says only “cancel”, ask:
+“Dismiss this question, cancel one of these tasks, or pause all check-ins?” Do not
+infer any of those actions until clear. Task cancellation needs separate explicit
+task authorization; global pause uses `coach pause` and readback.
+A `resolving` or `resolved` write-ahead choice cannot be dismissed: it may already
+have engaged a sequence. Explain the refusal, preserve the hold if still resolving,
+and retry only the same authorized resolution when possible; never undo suppression.
+Unknown holds, wrong bindings/owners, missing cancellation or receipt anchors and
+stale/incomplete captures refuse safely. Explain these limits, never edit storage.
+
+Legacy windows already stopped as `ambiguous-engagement` are **not** revived by upgrade,
+resolution or dismissal. This is an agent-mediated normal-inbound workflow, not a new gateway hook.
 Only persistent posts by the bound nonbot owner count; attachments count, other
 users/bots and explicit replies to non-coach messages do not. Context rereads the
 current task; if missing, closed or snoozed, acknowledge that rather than reviving

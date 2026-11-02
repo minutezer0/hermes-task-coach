@@ -28,7 +28,8 @@ class Driver:
             for key, record in records.items():
                 required = {'id', 'binding', 'message', 'candidates', 'state'}
                 resolved = {'selected_token', 'selection', 'result', 'resolved_at'} if record['state'] in ('resolving', 'resolved') else set()
-                if set(record) != required | resolved or record['state'] not in ('pending', 'resolving', 'resolved') or record['id'] != key:
+                dismissed = {'dismissal', 'result', 'resolved_at'} if record['state'] == 'dismissed' else set()
+                if set(record) != required | resolved | dismissed or record['state'] not in ('pending', 'resolving', 'resolved', 'dismissed') or record['id'] != key:
                     raise ValueError
                 if not isinstance(key, str) or not key or record['binding'] != state['route']['binding']:
                     raise ValueError
@@ -38,10 +39,16 @@ class Driver:
                         or not isinstance(message['content'], str) or not isinstance(message['attachments'], list)):
                     raise ValueError
                 instant(message['timestamp'])
-                identity = (json.dumps(record['binding'], sort_keys=True), message['id'])
-                if identity in identities:
-                    raise ValueError
-                identities.add(identity)
+                consumed = [message['id']]
+                if resolved:
+                    consumed.append(record['selection']['id'])
+                if dismissed:
+                    consumed.append(record['dismissal']['id'])
+                for consumed_id in consumed:
+                    identity = (json.dumps(record['binding'], sort_keys=True), consumed_id)
+                    if identity in identities:
+                        raise ValueError
+                    identities.add(identity)
                 candidates = record['candidates']
                 if not isinstance(candidates, list) or len(candidates) < 2 or len({c['task']['id'] for c in candidates}) != len(candidates):
                     raise ValueError
@@ -51,6 +58,18 @@ class Driver:
                             or candidate['receipt'] != row['receipt'] or candidate['task']['id'] != row['task']['id']
                             or int(candidate['receipt']['message_id']) >= int(message['id'])
                             or instant(candidate['receipt']['delivered_at']) > instant(message['timestamp'])):
+                        raise ValueError
+                if dismissed:
+                    dismissal = record['dismissal']
+                    if (not isinstance(dismissal['id'], str) or not dismissal['id'].isdecimal()
+                            or dismissal['author']['id'] != record['binding']['owner']
+                            or dismissal['author']['bot'] is not False or int(dismissal['id']) <= int(message['id'])
+                            or instant(dismissal['timestamp']) < instant(message['timestamp'])
+                            or instant(record['resolved_at']) < instant(dismissal['timestamp'])
+                            or not isinstance(dismissal['content'], str) or not isinstance(dismissal['attachments'], list)
+                            or record['result'] != dict(dismissed=True, engaged=False, clarification_id=key,
+                                original_message_id=message['id'], dismissal_message_id=dismissal['id'],
+                                provenance='explicit-owner-dismissal')):
                         raise ValueError
                 if resolved:
                     selected = next(c for c in candidates if c['token'] == record['selected_token'])
@@ -256,7 +275,7 @@ class Driver:
         route = runtime['route']
         if any(row['state'] == 'sending' for row in runtime['outbox'].values()):
             return dict(wakeAgent=False, reason='unconfirmed-delivery')
-        if any(c['state'] != 'resolved' for c in runtime.get('clarifications', {}).values()):
+        if any(c['state'] not in ('resolved', 'dismissed') for c in runtime.get('clarifications', {}).values()):
             return dict(wakeAgent=False, reason='pending-clarification')
         if route is None:
             return dict(wakeAgent=False, reason='setup-not-confirmed')
@@ -271,7 +290,7 @@ class Driver:
 
     @staticmethod
     def missed_during_clarification(runtime, binding, event):
-        return any(c['binding'] == binding and c['state'] == 'resolved'
+        return any(c['binding'] == binding and c['state'] in ('resolved', 'dismissed')
                    and instant(event['slot']) <= instant(c['resolved_at'])
                    for c in runtime.get('clarifications', {}).values())
 
@@ -355,7 +374,7 @@ class Driver:
             # Serialize the final hold check with the send boundary. A hold
             # admitted by another worker cannot be bypassed after authorization.
             with self.transaction() as state:
-                if any(c['state'] != 'resolved' for c in state.get('clarifications', {}).values()):
+                if any(c['state'] not in ('resolved', 'dismissed') for c in state.get('clarifications', {}).values()):
                     raise ValueError('pending clarification; delivery held')
                 with self.coach._transaction() as engine:
                     sequence = event_episode(engine['episode'], token)
@@ -458,20 +477,23 @@ class Driver:
                     rows.append(fallback)
                 tasks = {t['id']: t for t in self.coach.tasks()}
                 records = runtime.get('clarifications', {})
-                already_held = any(c['state'] != 'resolved' for c in records.values())
+                already_held = any(c['state'] not in ('resolved', 'dismissed') for c in records.values())
                 targets, ambiguous = [], False
                 for message in messages:
                     if message['author']['id'] != route['binding']['owner'] or message['author']['bot'] is not False:
                         continue
-                    if any(c['state'] == 'resolved' and c['selection']['id'] == message['id']
+                    if any(((c['state'] == 'resolved' and c['selection']['id'] == message['id'])
+                            or (c['state'] == 'dismissed' and c['dismissal']['id'] == message['id']))
                            and c['binding'] == route['binding'] for c in records.values()):
                         continue
                     existing = next((c for c in records.values()
                                      if c['binding'] == route['binding'] and c['message']['id'] == message['id']), None)
                     if existing:
+                        if existing['state'] == 'dismissed':
+                            continue
                         if existing['message'] != message:
                             raise ValueError('conflicting captured original message')
-                        if existing['state'] != 'resolved':
+                        if existing['state'] not in ('resolved', 'dismissed'):
                             ambiguous = True
                             targets.append(None)
                         else:
@@ -506,7 +528,7 @@ class Driver:
                         continue
                     targets.append(max(candidates, key=lambda r: int(r['receipt']['message_id'])) if candidates else None)
                 # A clear message cannot consume a candidate while any batch is held.
-                if not ambiguous and not any(c['state'] != 'resolved' for c in records.values()):
+                if not ambiguous and not any(c['state'] not in ('resolved', 'dismissed') for c in records.values()):
                     for target in targets:
                         if target and episode and event_episode(episode, target['token']) is not None:
                             sequence = event_episode(episode, target['token'])
@@ -529,6 +551,8 @@ class Driver:
             candidate = next((c for c in record['candidates'] if c['task']['id'] == task_id), None)
             if candidate is None or type(task_id) is not int:
                 raise ValueError('selection is not a captured candidate')
+            if record['state'] == 'dismissed':
+                raise ValueError('clarification already dismissed; conflicting resolution')
             if record['state'] in ('resolving', 'resolved'):
                 if record['selected_token'] != candidate['token'] or record['selection']['id'] != selection_message_id:
                     raise ValueError('conflicting clarification resolution')
@@ -546,6 +570,14 @@ class Driver:
                 released = now if now_supplied else instant(datetime.now(UTC))
                 record.update(state='resolved', resolved_at=max(now, released).isoformat())
                 return record['result']
+            for other in runtime.get('clarifications', {}).values():
+                consumed = [other['message']['id']]
+                if other['state'] in ('resolving', 'resolved'):
+                    consumed.append(other['selection']['id'])
+                if other['state'] == 'dismissed':
+                    consumed.append(other['dismissal']['id'])
+                if selection_message_id in consumed:
+                    raise ValueError('selection message already belongs to a clarification')
             anchor = min(record['candidates'], key=lambda c: int(c['receipt']['message_id']))['receipt']
             messages = validate_pages(pages, runtime['route'], anchor['message_id'], now)
             original = next((m for m in messages if m['id'] == record['message']['id']), None)
@@ -581,9 +613,63 @@ class Driver:
             task_id=task_id, selection_message_id=selection_message_id, pages=pages,
             now=now if now_supplied else None)
 
+    def dismiss_clarification(self, *, binding, clarification_id, dismissal_message_id, pages, now=None):
+        """Discard one pending question on skill-mediated explicit owner intent.
+
+        No text classifier and no engine write: an existing write-ahead resolution
+        is deliberately irreversible here, even if its engine commit is uncertain.
+        """
+        validate_binding(binding)
+        if not isinstance(dismissal_message_id, str) or not dismissal_message_id.isdecimal():
+            raise ValueError('dismissal requires an exact captured owner message ID')
+        with self.transaction() as runtime:
+            current = instant(now or datetime.now(UTC))
+            record = runtime.get('clarifications', {}).get(clarification_id)
+            if not record or record['binding'] != binding or runtime['route']['binding'] != binding:
+                raise ValueError('unknown clarification or binding mismatch')
+            if record['state'] == 'dismissed':
+                if record['dismissal']['id'] != dismissal_message_id:
+                    raise ValueError('conflicting clarification dismissal')
+                return record['result']
+            if record['state'] != 'pending':
+                raise ValueError('conflicting resolution already durable; cannot dismiss')
+            for other in runtime.get('clarifications', {}).values():
+                consumed = [other['message']['id']]
+                if other['state'] in ('resolving', 'resolved'):
+                    consumed.append(other['selection']['id'])
+                if other['state'] == 'dismissed':
+                    consumed.append(other['dismissal']['id'])
+                if dismissal_message_id in consumed:
+                    raise ValueError('dismissal message already belongs to a clarification')
+            anchor_candidate = min(record['candidates'], key=lambda c: int(c['receipt']['message_id']))
+            receipt = anchor_candidate['receipt']
+            messages = validate_pages(pages, runtime['route'], receipt['message_id'], current)
+            anchor = messages[-1]
+            row = runtime['outbox'][anchor_candidate['token']]
+            if (anchor['author']['id'] != runtime['route']['bot_id'] or anchor['author']['bot'] is not True
+                    or instant(anchor['timestamp']) != instant(receipt['delivered_at'])
+                    or anchor['content'] != row['body']):
+                raise ValueError('history anchor does not match confirmed receipt')
+            dismissal = next((m for m in messages if m['id'] == dismissal_message_id), None)
+            original = record['message']
+            if (not dismissal or dismissal['author']['id'] != binding['owner'] or dismissal['author']['bot'] is not False
+                    or int(dismissal['id']) <= int(original['id'])
+                    or instant(dismissal['timestamp']) < instant(original['timestamp'])):
+                raise ValueError('dismissal must be a later captured bound owner message')
+            # Use actual release time, not command start, including freshness.
+            released = instant(now or datetime.now(UTC))
+            if released < current:
+                raise ValueError('clock regressed during clarification dismissal')
+            validate_pages(pages, runtime['route'], receipt['message_id'], released)
+            result = dict(dismissed=True, engaged=False, clarification_id=clarification_id,
+                          original_message_id=original['id'], dismissal_message_id=dismissal['id'],
+                          provenance='explicit-owner-dismissal')
+            record.update(state='dismissed', dismissal=dismissal, result=result, resolved_at=released.isoformat())
+            return result
+
     def pending_clarifications(self, binding):
         return [c for c in self.status().get('clarifications', {}).values()
-                if c['binding'] == binding and c['state'] != 'resolved']
+                if c['binding'] == binding and c['state'] not in ('resolved', 'dismissed')]
 
     def engagement(self, binding, pages, *, now=None, reply_to_message_id=None, inbound_message_id=None):
         now = instant(now or datetime.now(UTC))
@@ -633,7 +719,7 @@ class Driver:
         text += '    if process.returncode == 0 and type(candidate.get("wakeAgent")) is bool:\n        result = candidate\n'
         text += 'except Exception:\n    pass\nprint(json.dumps(result))\n'
         prompt = ('Load task-coach and follow its native runtime protocol. Use helper ' + str(helper_path) + ' with --data-dir ' + str(self.directory.resolve()) + '. Re-run runtime preflight. Compose one human check-in only for its current task. For followups fetch and validate fresh complete Discord history before dispatch. Use runtime draft/observe/dispatch/confirm; native Hermes executable ' + str(hermes_path) + '. Never send directly or retry uncertain attempts. No final chat delivery: delivery is handled by the helper.')
-        instruction = ('For normal inbound messages ONLY matching the explicitly confirmed Task Coach binding, load task-coach and use the trusted inbound owner/profile/account/chat/thread with runtime context --binding. If trusted inbound metadata exposes an explicit reply target, pass --reply-to-message-id to context and pass both --reply-to-message-id and --inbound-message-id to runtime engagement with fresh history through the exact target receipt. Otherwise capture fresh history through the latest confirmed receipt from runtime status and run runtime engagement; never infer a missing reply target from text or history order. Follow the documented reply_targets capture interface only for trusted metadata. Null context or ambiguous-engagement is not task attribution: before changing task data or marking engagement, ask which task using the pending clarification candidate titles, not raw IDs. The durable pending hold blocks automated sends. Ask only in normal inbound conversation, never via unattended sends. On an explicit owner choice use runtime resolve-clarification --binding with --clarification-id, --task-id for the selected snapshot, --selection-message-id from trusted inbound context and --pages-file containing fresh raw history through the oldest captured candidate receipt. This is explicit-owner-selection provenance, not a Discord reply reference; never add it to reply_targets. Inspect pending records before engagement on a selection turn. Preserve all other delivery blocks, never replay missed sends, and never fall back to the latest task. Continue only a returned task with one useful next-step question; never mark it done without permission. Honor explicit pause via coach pause. Do not apply this instruction to other users or destinations.')
+        instruction = ('For normal inbound messages ONLY matching the explicitly confirmed Task Coach binding, load task-coach and use the trusted inbound owner/profile/account/chat/thread with runtime context --binding. If trusted inbound metadata exposes an explicit reply target, pass --reply-to-message-id to context and pass both --reply-to-message-id and --inbound-message-id to runtime engagement with fresh history through the exact target receipt. Otherwise capture fresh history through the latest confirmed receipt from runtime status and run runtime engagement; never infer a missing reply target from text or history order. Follow the documented reply_targets capture interface only for trusted metadata. Null context or ambiguous-engagement is not task attribution: before changing task data or marking engagement, ask which task using the pending clarification candidate titles, not raw IDs. The durable pending hold blocks automated sends. Ask only in normal inbound conversation, never via unattended sends. On an explicit owner choice use runtime resolve-clarification --binding with --clarification-id, --task-id for the selected snapshot, --selection-message-id from trusted inbound context and --pages-file containing fresh raw history through the oldest captured candidate receipt. This is explicit-owner-selection provenance, not a Discord reply reference; never add it to reply_targets. Inspect pending records before engagement on a selection or dismissal turn. If the owner explicitly says "never mind" or "dismiss that question", use runtime dismiss-clarification --binding with the exact --clarification-id, trusted later --dismissal-message-id and --pages-file containing fresh raw history through the oldest candidate receipt. No task selection, edit, completion, snooze, engagement, task cancellation or global pause is implied. Read back runtime status. Say "I will not apply that reply; both tasks are unchanged" only after success and when still true; otherwise say "I will not apply that reply or make any task changes". If the owner just says "cancel", ask whether they mean dismiss the question, cancel a named task or pause all check-ins; do not guess. If several holds exist, ask which question by candidate titles. Dismissal permits edited/deleted originals and changed/unavailable candidates but refuses a durable resolving or resolved choice; never undo suppression or edit safety records. Never fabricate inbound IDs, captures or reply references. Preserve all other delivery blocks, never replay missed sends, and never fall back to the latest task. Continue only a returned task with one useful next-step question; never mark it done without permission. Honor explicit pause via coach pause. Do not apply this instruction to other users or destinations.')
         return dict(script_path=str(script), script_text=text,
                     cron_argv=[str(hermes_path), 'cron', 'create', 'every 1m', prompt, '--name', 'task-coach', '--skill', 'task-coach', '--script', str(script.relative_to(profile / 'scripts')), '--deliver', 'local', '--failure-deliver', 'local', '--paused'],
                     inbound_instruction=instruction, initially_paused=True, live_verified=False)
@@ -776,6 +862,11 @@ def add_parser(commands):
     resolve.add_argument('--task-id', type=int, required=True)
     resolve.add_argument('--selection-message-id', required=True)
     resolve.add_argument('--pages-file', type=Path, required=True)
+    dismiss = operations.add_parser('dismiss-clarification', help='Discard one pending question on explicit owner intent; never cancel tasks')
+    dismiss.add_argument('--binding', type=json.loads, required=True)
+    dismiss.add_argument('--clarification-id', required=True)
+    dismiss.add_argument('--dismissal-message-id', required=True)
+    dismiss.add_argument('--pages-file', type=Path, required=True)
     for name in ('context', 'engagement'):
         operation = operations.add_parser(name)
         operation.add_argument('--binding', type=json.loads, required=True)
@@ -810,6 +901,9 @@ def run_cli(directory, args):
     if operation == 'resolve-clarification':
         return driver.resolve_clarification(binding=args.binding, clarification_id=args.clarification_id,
             task_id=args.task_id, selection_message_id=args.selection_message_id, pages=pages)
+    if operation == 'dismiss-clarification':
+        return driver.dismiss_clarification(binding=args.binding, clarification_id=args.clarification_id,
+            dismissal_message_id=args.dismissal_message_id, pages=pages)
     if operation == 'engagement':
         return driver.engagement(args.binding, pages, reply_to_message_id=args.reply_to_message_id, inbound_message_id=args.inbound_message_id)
     if operation == 'confirm':

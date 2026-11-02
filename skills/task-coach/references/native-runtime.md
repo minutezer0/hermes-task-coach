@@ -426,7 +426,8 @@ are made.
 
 Runtime JSON remains version-1 compatible on read: old `{route,outbox}` states are
 accepted without synthesizing a stop or modifying old receipts. The optional strict
-`clarifications` mapping records `pending`, write-ahead `resolving`, then `resolved`.
+`clarifications` mapping records `pending`, write-ahead `resolving`, then `resolved`,
+or an atomic `dismissed` outcome for a still-pending question.
 The directory flock serializes admission and resolution. Before engine engagement,
 the chosen task, selection post and original binding are durably fenced in a
 `resolving` record. Engine suppression commits before releasing the hold; crashes
@@ -436,9 +437,63 @@ the same result without replaying any task operation; they need not refresh hist
 The exact current task must still match its captured snapshot and remain eligible
 on first resolution/recovery. Wrong owner/binding, invalid candidate, edited/missing
 original, stale/incomplete capture or unavailable/changed task refuses without task
-changes. Explain a refusal and leave sends held; no automatic cancellation/reset or
-hold-discard command is provided. New unknown messages during a pending hold are
-left unclassified (they may be its answer); a selected post is not later re-engaged.
+changes. Explain a refusal and leave sends held unless the owner explicitly dismisses
+the still-pending question using the guarded path below. New unknown messages during
+a pending hold are left unclassified (they may be its answer); selected posts are
+not later re-engaged.
+
+### Dismissing a clarification without selecting a task
+
+After “Do you mean ‘Draft proposal’ or ‘Book appointment’?”, the owner may say
+“never mind” or “dismiss that question”. This is explicit conversational intent,
+interpreted by the skill, **not a runtime text classifier**. Inspect pending records
+before engagement on that turn. Use the exact question and trusted later owner post
+ID; fetch fresh raw history from latest through the **oldest candidate receipt**:
+
+```sh
+python3 /absolute/skill/scripts/task-coach.py --data-dir /approved/store runtime dismiss-clarification --binding '{"owner":"OWNER","profile":"PROFILE","account":"ACCOUNT","chat":"CHANNEL","thread":"none"}' --clarification-id CLARIFICATION_ID --dismissal-message-id OWNER_DISMISSAL_ID --pages-file /private/fresh-pages.json
+```
+
+The runtime validates the exact current route/binding, persistent nonbot owner,
+later post ID/timestamp, fresh complete capture and the existing confirmed receipt
+anchor (bot ID, body and delivery time). It does **not** require the original reply
+to remain present/unchanged or tasks to match snapshots or stay eligible: an edited
+or deleted original and edited, closed, snoozed or deleted candidate are precisely
+why safe discard is useful. It never selects/restores a stale task. Do not fabricate
+reply references, IDs or captures. The stored original and candidate snapshots and
+all delivery receipts remain immutable.
+
+Read back `runtime status`; on success say “Okay, I won’t apply that reply; both tasks
+are unchanged” when still true, otherwise “I won’t apply that reply or make any task
+changes.” No task fields or engagement change. No completion, snooze, task cancellation
+or global pause is implied. Only that hold is released; other pending questions,
+pause, failures, legacy stops and uncertain sends remain. Both original and dismissal
+message IDs are processed for this binding, so later engagement/observe/confirm
+cannot re-ask the same question or turn the cancellation into task engagement.
+Later slots remain eligible, never catch up missed ones. For several questions,
+ask which one by candidate titles; unknown IDs never mean discard everything.
+
+Bare “cancel” is ambiguous: ask “Dismiss this question, cancel a named task, or pause
+all check-ins?” before acting. Task cancellation requires its own explicit task
+authorization; a global pause uses `coach pause` with readback. Dismissing a question
+is neither. The runtime trusts the skill's explicit-intent assertion and supplied
+tool captures; it cannot authenticate fabricated operator input.
+
+The atomic `pending` → `dismissed` runtime transaction persists the cancellation
+capture, `explicit-owner-dismissal` audit result and actual release cutoff, with
+no engine write. Identical retries (same binding, clarification and dismissal ID)
+return that immutable result across restart without fresh history. A different
+dismissal, a resolution after dismissal or a dismissal after durable `resolving`/
+`resolved` refuses. **Never undo a write-ahead resolution**: suppression may already
+have committed even if the response was lost. An interrupted `resolving` choice
+must finish via the same guarded resolution; changed candidates may still make
+that recovery refuse and leave the hold in place. Dismissal is not a repair bypass.
+Concurrent dismissal/resolution has one serialized durable winner; the other
+refuses, and no suppressed task is revived. Wrong owner/binding, absent later
+cancellation, missing/mismatched receipt anchor, stale/incomplete history, clock
+regression, reused cancellation messages or malformed state leave the hold intact.
+Freshness is checked under the lock again at release; there is no age bypass after
+waiting for a lock. A completed identical retry only reads the recorded result.
 
 Preflight, draft/dispatch authorization and the final locked send boundary honor the
 hold. A runtime release cutoff prevents sending any event whose slot became due
