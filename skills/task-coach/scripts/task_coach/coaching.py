@@ -113,7 +113,10 @@ def validate_state(state):
         episode = state['episode']
         if episode is None:
             return
-        if not (isinstance(episode, dict) and set(episode) == {'day', 'task_id', 'binding', 'config', 'events', 'stopped'}):
+        required = {'day', 'task_id', 'binding', 'config', 'events', 'stopped'}
+        if not (isinstance(episode, dict) and required <= set(episode) <= required | {'purpose'}):
+            raise ValueError('invalid coaching state')
+        if 'purpose' in episode and (episode['purpose'] != 'one-check-in-test' or len(episode['events']) != 1):
             raise ValueError('invalid coaching state')
         if not (datetime.fromisoformat(episode['day']).date().isoformat() == episode['day']):
             raise ValueError('invalid coaching state')
@@ -329,8 +332,10 @@ class Coach:
             episode['stopped'] = episode['stopped'] or 'owner-engaged'
             return dict(stopped=episode['stopped'])
 
-    def plan(self, day, config, binding, now, recent) -> dict:
+    def plan(self, day, config, binding, now, recent, *, future_only=False) -> dict:
         minutes = window_minutes(day, config)
+        if future_only:
+            minutes = [minute for minute in minutes if minute > now]
         task = choose_task(self.tasks(), now, config['timezone'], self.rng, recent) if minutes else None
         events = []
         if task and minutes:

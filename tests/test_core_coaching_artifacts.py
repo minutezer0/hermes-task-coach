@@ -19,6 +19,8 @@ class CoachingArtifactTest(unittest.TestCase):
             (root / 'tests').mkdir()
             shutil.copyfile(SOURCE / 'tests/test_core_coaching.py', root / 'tests/test_core_coaching.py')
             shutil.copyfile(SOURCE / 'tests/test_core_driver.py', root / 'tests/test_core_driver.py')
+            for name in ('test_core_restart.py', 'test_core_live_test.py'):
+                shutil.copyfile(SOURCE / 'tests' / name, root / 'tests' / name)
             env = dict(HOME=str(root / 'synthetic-home'), HERMES_HOME=str(root / 'synthetic-profile'), TMPDIR=str(root), PYTHONDONTWRITEBYTECODE='1')
             result = subprocess.run([sys.executable, '-I', '-B', '-m', 'unittest', 'discover', '-s', str(root / 'tests'), '-p', 'test_core_coaching.py', '-q'], cwd=root, env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -27,6 +29,10 @@ class CoachingArtifactTest(unittest.TestCase):
             self.assertEqual(driver_result.returncode, 0, driver_result.stdout + driver_result.stderr)
             self.assertIn('test_synthetic_full_flow_opener_followup_reply_stop', driver_result.stderr)
             self.assertIn('NOT real platform qualification', driver_result.stderr)
+            for pattern in ('test_core_restart.py', 'test_core_live_test.py'):
+                result = subprocess.run([sys.executable, '-I', '-B', '-m', 'unittest', 'discover', '-s', str(root / 'tests'), '-p', pattern, '-v'], cwd=root, env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('OK', result.stderr)
 
     @unittest.skipUnless(importlib.util.find_spec('setuptools'), 'wheel artifact requires setuptools>=68')
     def test_installed_wheel_console_and_engine_lifecycle(self):
@@ -85,7 +91,7 @@ print('wheel lifecycle: 3 confirmed deliveries; duplicate claims suppressed')
             copied = root / 'skills/task-coach'
             shutil.copytree(venv / 'share/task-coach/skill', copied)
             (root / 'tests').mkdir()
-            for name in ('test_core_coaching.py', 'test_core_driver.py'):
+            for name in ('test_core_coaching.py', 'test_core_driver.py', 'test_core_restart.py', 'test_core_live_test.py'):
                 shutil.copyfile(SOURCE / 'tests' / name, root / 'tests' / name)
             launcher = copied / 'scripts/task-coach.py'
             result = run([sys.executable, '-I', '-B', str(launcher), 'coach', 'inspect'], env=env)
@@ -93,3 +99,6 @@ print('wheel lifecycle: 3 confirmed deliveries; duplicate claims suppressed')
             self.assertTrue((copied / 'references/coaching.md').is_file())
             result = run([str(python), '-I', '-B', '-m', 'unittest', 'discover', '-s', str(root / 'tests'), '-p', 'test_core_driver.py', '-v'], env=env)
             self.assertIn('test_synthetic_full_flow_opener_followup_reply_stop', result.stderr)
+            for pattern in ('test_core_restart.py', 'test_core_live_test.py'):
+                result = run([str(python), '-I', '-B', '-m', 'unittest', 'discover', '-s', str(root / 'tests'), '-p', pattern, '-v'], env=env)
+                self.assertIn('OK', result.stderr)

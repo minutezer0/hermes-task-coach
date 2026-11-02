@@ -45,8 +45,10 @@ and obtain approval before installing them. The wrapper path must resolve under
 the active profile's scripts directory. Save script_text verbatim to script_path
 as a private executable (0700), never overwrite an existing script without review.
 The shebang and subprocess use explicit interpreter/helper/data paths, not cwd or
-PATH. Run and read it back before executing the returned cron_argv as an argument
-array. This creates a native, initially paused cron with:
+PATH. Read it back before executing the returned cron_argv as an argument
+array. Do not run the wrapper against user data before preparing an intended
+fresh-setup test: it calls preflight and can persist a daily episode that makes
+`prepare-test` refuse. This creates a native, initially paused cron with:
 
 ```
 hermes cron create 'every 1m' PROMPT --name task-coach --skill task-coach --script task-coach-preflight.py --deliver local --failure-deliver local --paused
@@ -67,9 +69,78 @@ normal-inbound instruction workflow (for example, an explicitly approved appende
 section in existing instructions). Never replace SOUL, patch installed Hermes
 sources, or inspect its internal databases. The snippet applies only to the exact
 confirmed owner/profile/account/chat/thread. Read back the installed instruction
-and paused job. Keep the job paused until the user authorizes a live pilot and
-it demonstrates actual send/readback, owner reply-stop and contextual continuation.
-Neither native installer success nor synthetic fixtures qualify real messaging.
+and paused job. Installation approval can cover wrapper, paused job and exact
+scoped snippet together in plain language; it is not send permission. Keep the job
+paused for a separately authorized test. Verify actual send/readback and contextual
+continuation/owner engagement; a single-event test cannot demonstrate cancellation
+of a live follow-up. Disclose that remaining limit and obtain separate authorization
+for any broader bounded pilot or ongoing activation. Neither native installer
+success nor synthetic fixtures qualify real messaging.
+
+## Explicit ONE-check-in fresh-setup test
+
+With the exact route already confirmed, an eligible task saved and the current
+local day/time inside the saved allowed window, ask explicitly to send **one**
+check-in to that route. No permission to change days/windows or clear a global
+pause is implied. Keep the native recurring job paused throughout; do not resume
+it to test. Use the same approved data directory and installed helper:
+
+```sh
+python3 "<skill_dir>/scripts/task-coach.py" runtime prepare-test --confirm-test
+python3 "<skill_dir>/scripts/task-coach.py" runtime preflight
+```
+
+Preparation never sends, claims, writes an outbox row or changes cron. It persists
+one newly generated planned opener with durable episode
+`purpose:one-check-in-test`, the current minute slot and a normal ten-minute
+opportunity capped at window end. The config is unchanged; there are **zero
+follow-ups**, regardless of saved follow-up limits. The result has
+`test_prepared:true`, `wakeAgent:false` and the persisted `episode`. Run normal
+preflight, draft, dispatch and confirm for this exact event; real history matching
+the exact bot/body/time/route is still required. No receipt/fence/history rule is
+relaxed, and uncertain attempts remain permanently nonretryable. Then use normal
+context/engagement with real owner reply history and continue the task in chat.
+
+The conservative supported scope is **no existing episode at all and an entirely
+empty outbox**. Coach status with `episode:null` is okay. Any active plan, stopped
+empty episode, old-day episode, draft, sending/uncertain or confirmed journal
+refuses unchanged. This intentionally means existing installations may not qualify;
+no automatic reset, archival, token reuse, database deletion or test retry is
+supported. The command also refuses missing/invalid route, global pause, clock
+regression, unavailable task, disallowed day or outside-window time. There is no
+production clock flag or day/window bypass. A repeat preparation refuses even if
+the first event was never drafted. After a one-event test, today's episode remains
+complete/stopped rather than becoming a new randomized plan; a separately enabled
+ongoing job can plan on a later allowed day through the ordinary engine.
+
+Preparation holds the same directory flock as runtime writes and engine operations,
+reads the outbox in a read-only SQLite transaction and commits the engine episode
+under that lock. Only the engine is written. A concurrent ordinary planner either
+wins first (test refuses) or sees the new single-event episode; neither can
+replace an existing token. Any stale token/fence still fails normal authorization.
+Supported operations preserve audit/replay records; manual database edits or
+processes ignoring the lock are outside the guarantee. Config/task edits may
+invalidate preparation and are rechecked at dispatch. The platform check/send
+race remains unchanged. Older helpers that do not recognize the purpose field
+fail closed: upgrade the bundled runtime together before using this command.
+
+At the checkpoint, speak naturally: distinguish verified delivery, recognized
+owner engagement and task continuation from **unverified live follow-up
+suppression**. Do not label no-follow-up behavior as a suppression experiment.
+Keep cron paused if verification fails. Installation, test authorization and
+ongoing activation are separate permissions. This feature does not monitor cron
+pause state itself: keeping the job paused and reading back that exact job are
+operator obligations, not an invented helper-enforced schedule fence.
+
+Do not add a five-minute test follow-up or require a follow-up pilot during setup.
+The optional one-check-in delivery test is the onboarding test; disclose that
+cancellation of a pending live follow-up remains unverified, then obtain distinct
+ongoing-send approval. After that approval, read back the active schedule and
+verify an eligible task and a supported upcoming allowed opportunity before
+finishing naturally: “Task Coach setup complete—you’ll be hearing from me soon!”
+If today's episode is stopped, explain that regular check-ins start on the next
+allowed day rather than promising a send soon today. Paused installations must
+say check-ins are paused, not that proactive setup is complete.
 
 ## Complete CLI lifecycle
 
@@ -78,6 +149,7 @@ Prefix each command with the explicit installed helper and consistent data path:
 | Command | Effect |
 |---|---|
 | `runtime preflight` | Nonclaiming due inspection; quiet without confirmed setup |
+| `runtime restart --confirm-restart` | Replan only today's untouched stopped episode; empty outbox required; no send or cron change |
 | `runtime status` | Confirmed route and durable outbox rows |
 | `runtime configure --route JSON --confirm-setup` | Explicit route opt-in, not account setup |
 | `runtime native-plan --profile-home PATH --python PATH --helper PATH --hermes PATH` | Emit wrapper/paused cron/scoped inbound artifacts only |
@@ -134,6 +206,66 @@ reviving an expired episode. A platform outcome that itself arrives after the
 opportunity still records truth for the already journaled on-time attempt; it
 never authorizes a new late send. If the engine has rolled to a newer day, the old
 receipt lives in the outbox; the new episode is untouched.
+
+## Explicit, narrowly scoped same-day restart
+
+Finish preferences and add/verify an eligible task **before** first preflight.
+Preflight can persist a stopped `task-unavailable` episode when tasks are empty;
+changing tasks/settings alone does not revive it. `coach resume` never restarts a
+stopped episode. An explicitly authorized recovery for this untouched case is:
+
+```sh
+python3 "<skill_dir>/scripts/task-coach.py" runtime restart --confirm-restart
+python3 "<skill_dir>/scripts/task-coach.py" coach status
+python3 "<skill_dir>/scripts/task-coach.py" runtime status
+```
+
+Use the same approved `--data-dir` before each subcommand if applicable. Restart
+uses the real UTC production clock after acquiring the storage lock; there is no
+CLI date/time/token override. Deterministic API clocks are for synthetic tests.
+The episode must already exist, be stopped, and belong to **today in both its
+saved timezone and the current configured timezone**. The confirmed runtime route
+must be valid and its binding must match that episode. Global pause and a clock
+older than the last tick are refusals, not flags to clear automatically.
+
+**Zero prior events means zero**, not merely zero deliveries: planned, claimed,
+failed and delivered events all refuse. **The entire outbox must be empty**, even
+if a row appears historical. Drafts are durable pending work; sending/uncertain
+rows may still be in flight, and confirmed rows are permanent safety/audit.
+Unknown or corrupt formats fail validation rather than being treated as empty.
+This is deliberately stricter than trying to classify relevant rows by dates.
+It prevents resurrecting a reused same-day token or a worker's old authorization;
+no old token is recycled, no journal is erased, and no receipt is retried.
+
+Restart holds the shared directory flock while reading a read-only outbox
+transaction and validating/replacing the coaching episode in one SQLite
+transaction. Only coaching state is written; no cross-database write commit is
+needed. The lock serializes against engine prepare/tick and runtime journal
+writes. Multi-step draft/dispatch workers cannot have an authorized old event in
+the accepted zero-event case: any prior planned event alone refuses restart; any
+journal row also refuses it. Stale tokens/fences still fail existing checks.
+This guarantee applies to supported local operations, not manual database edits
+or arbitrary hostile processes ignoring the lock. Concurrent task/config edits
+can still invalidate the fresh plan and are rechecked by preflight/dispatch;
+restart does not relax final-send authorization or the platform send race.
+
+On success it rereads current preferences/tasks, chooses an eligible task, and
+plans only minute-aligned slots **strictly later than now** within today's
+configured days/window. Before-window execution may plan later today; it never
+catches up a past/current minute. No eligible task or no remaining slots is a
+ValueError with rollback. Other refusals also leave the existing episode and
+journals intact. An active second restart refuses instead of regenerating tokens.
+
+Success is JSON containing `restarted:true`, `wakeAgent:false`, `previous_stop`
+and the fresh `episode`. API refusals are descriptive ValueErrors; CLI refusals
+use the normal nonzero exit and stderr error. All tasks, saved config, route,
+message/evidence replay records and outbox bytes are preserved. The existing
+bounded recent-selection history is updated as for an ordinary new plan. The
+empty stopped episode is replaced, not archived as a delivery. Restart does not
+claim, send, clear pause, create/enable cron, or promise an immediate check-in.
+Native cron pause and global coaching pause are separate controls; keep a pilot
+schedule paused until separately approved. Never edit/delete a database, prune
+an outbox or bypass dispatch as an operator workaround for a refused restart.
 
 ## History capture format and coverage
 

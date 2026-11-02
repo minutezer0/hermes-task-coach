@@ -138,7 +138,9 @@ def run(argv=None):
         epilog="Defaults: UTC; weekdays mon,tue,wed,thu,fri; window 09:00–17:00; "
         "2 unanswered followups; intervals 30–120 minutes. Intervals must be 1..1440 "
         "minutes and followups 0..20, fitting within a same-day window at the minimum "
-        "interval. Destination is optional and opaque; automation remains disabled.",
+        "interval. Choose local tasks or preferences for already-configured Discord "
+        "check-ins; setup never connects messaging or enables delivery. "
+        "The legacy --destination preference does not configure a route; automation remains disabled.",
     )
     setup.add_argument("--interactive", action="store_true", help="prompt for settings; blank keeps the displayed default")
     setup.add_argument("--update", action="store_true", help="explicitly update an existing configuration")
@@ -224,12 +226,27 @@ def run(argv=None):
         if getattr(args, "interactive", False):
             if existing and not args.update:
                 raise ValueError("use setup --update --interactive to edit existing settings")
-            for field in DEFAULT_CONFIG:
-                if field == "automation_enabled" or field in changes:
+            print('Local tasks or Discord check-ins? [local]: ', end='', file=sys.stderr, flush=True)
+            mode = input().strip().lower() or 'local'
+            if mode not in ('local', 'discord'):
+                raise ValueError('choose local or discord')
+            if mode == 'discord':
+                print('These are preferences only. Discord must already be configured in Hermes; no messages or schedule are enabled here.', file=sys.stderr)
+            labels = {
+                'timezone': 'Your timezone (for example Europe/Paris or UTC)',
+                'weekdays': 'Check-in days (mon,tue,wed,thu,fri,sat,sun)',
+                'notification_start': 'Earliest check-in time (HH:MM)',
+                'notification_end': 'Latest check-in time (HH:MM, same day)',
+                'max_unanswered_followups': 'Maximum follow-ups without a reply',
+                'min_followup_interval': 'Minimum minutes between follow-ups',
+                'max_followup_interval': 'Maximum minutes between follow-ups',
+            }
+            for field, label in labels.items():
+                if field in changes or (mode == 'local' and field != 'timezone'):
                     continue
                 default = config[field]
                 display = ",".join(default) if isinstance(default, list) else default
-                print(f"{field} [{display}]: ", end="", file=sys.stderr, flush=True)
+                print(f"{label} [{display}]: ", end="", file=sys.stderr, flush=True)
                 answer = input().strip()
                 if answer:
                     changes[field] = answer.split(",") if field == "weekdays" else int(answer) if type(default) is int else answer

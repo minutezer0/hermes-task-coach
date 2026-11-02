@@ -48,7 +48,7 @@ class Driver:
         self.directory = Path(data_dir)
 
     @contextmanager
-    def transaction(self):
+    def transaction(self, *, readonly=False):
         # Same directory lock as the engine, but never nest these transactions.
         import fcntl
         safe_path(self.directory, True)
@@ -59,11 +59,14 @@ class Driver:
             for suffix in ('', '-journal', '-wal', '-shm'):
                 safe_path(Path(str(path) + suffix))
             fresh = not path.exists()
+            if fresh and readonly:
+                raise ValueError('runtime setup not confirmed')
             if fresh:
                 created = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 os.close(created)
-            with closing(sqlite3.connect(path)) as db:
-                db.execute('BEGIN IMMEDIATE')
+            target = path.resolve().as_uri() + '?mode=ro' if readonly else path
+            with closing(sqlite3.connect(target, uri=readonly)) as db:
+                db.execute('BEGIN' if readonly else 'BEGIN IMMEDIATE')
                 try:
                     if fresh:
                         db.execute(SCHEMA)
@@ -80,7 +83,8 @@ class Driver:
                     self.validate_state(state)
                     yield state
                     self.validate_state(state)
-                    db.execute('INSERT OR REPLACE INTO runtime VALUES (1,?)', (json.dumps(state),))
+                    if not readonly:
+                        db.execute('INSERT OR REPLACE INTO runtime VALUES (1,?)', (json.dumps(state),))
                     db.commit()
                 except BaseException:
                     db.rollback()
@@ -88,9 +92,8 @@ class Driver:
         finally:
             os.close(fd)
 
-    def configure(self, route, *, confirm=False):
-        if not confirm:
-            raise ValueError('explicit setup confirmation required')
+    @staticmethod
+    def validate_route(route):
         if not isinstance(route, dict) or set(route) != {'binding', 'platform', 'destination', 'channel_id', 'bot_id'}:
             raise ValueError('invalid route fields')
         validate_binding(route['binding'])
@@ -104,6 +107,11 @@ class Driver:
             raise ValueError('binding must match exact history channel or thread')
         if route['bot_id'] == binding['owner']:
             raise ValueError('owner must not be the bot')
+
+    def configure(self, route, *, confirm=False):
+        if not confirm:
+            raise ValueError('explicit setup confirmation required')
+        self.validate_route(route)
         with self.transaction() as state:
             if state['outbox'] and state['route'] != route:
                 raise ValueError('cannot rebind a nonempty outbox; use a separate data directory')
@@ -113,6 +121,91 @@ class Driver:
     def status(self):
         with self.transaction() as state:
             return json.loads(json.dumps(state))
+
+    def restart(self, *, confirm=False, now=None):
+        if confirm is not True:
+            raise ValueError('explicit restart confirmation required')
+        from zoneinfo import ZoneInfo
+        # Hold the shared directory lock across both databases. Only coaching
+        # state changes: a crash cannot leave an outbox half of a restart.
+        with self.transaction(readonly=True) as runtime:
+            self.validate_route(runtime['route'])
+            # Deliberately stricter than day-based relevance: even an old row
+            # may represent an in-flight worker. Never discard its journal.
+            if runtime['outbox']:
+                raise ValueError('restart requires an empty outbox; prior drafts or attempts are not restartable')
+            path = self.directory / 'coach.sqlite3'
+            safe_path(path)
+            if not path.exists():
+                raise ValueError('restart requires an already-stopped episode')
+            # Already hold the directory lock: bypass only the engine's outer
+            # flock, not its SQLite transaction or state/schema validation.
+            with self.coach._transaction() as state:
+                now = instant(now if now is not None else datetime.now(UTC))
+                config = self.coach.config()
+                day = now.astimezone(ZoneInfo(config['timezone'])).date().isoformat()
+                previous = state['episode']
+                if state['paused']:
+                    raise ValueError('globally paused; restart does not clear pause')
+                if not previous or not previous['stopped']:
+                    raise ValueError('restart requires an already-stopped episode')
+                old_day = now.astimezone(ZoneInfo(previous['config']['timezone'])).date().isoformat()
+                if previous['day'] != day or previous['day'] != old_day:
+                    raise ValueError('restart is limited to today in both saved and current timezones')
+                if state['last_tick'] is not None and now < instant(state['last_tick']):
+                    raise ValueError('clock regressed; restart refused')
+                if previous['binding'] != runtime['route']['binding']:
+                    raise ValueError('confirmed route does not match the stopped episode binding')
+                if previous['events']:
+                    raise ValueError('restart requires zero prior events, including unclaimed plans')
+                episode = self.coach.plan(day, config, runtime['route']['binding'], now, state['recent'], future_only=True)
+                if episode['task_id'] is None or not episode['events']:
+                    raise ValueError('no eligible task or future slots remain today')
+                state['episode'] = episode
+                state['last_tick'] = now.isoformat()
+                state['recent'] = (state['recent'] + [episode['task_id']])[-7:]
+                return dict(restarted=True, wakeAgent=False, previous_stop=previous['stopped'], episode=episode)
+
+    def prepare_test(self, *, confirm=False, now=None):
+        """Authorize one fresh onboarding event, never a send or a schedule change."""
+        if confirm is not True:
+            raise ValueError('explicit one-check-in test confirmation required')
+        from zoneinfo import ZoneInfo
+        from .coaching import window_minutes, choose_task
+        # Lock outbox and engine together. Refusing *any* episode/outbox avoids
+        # replacing an active plan or reviving tokens held by another worker.
+        with self.transaction(readonly=True) as runtime:
+            self.validate_route(runtime['route'])
+            if runtime['outbox']:
+                raise ValueError('test requires an empty outbox; preserve all safety records')
+            # Validate fallible read-only prerequisites before first DB creation;
+            # a refused fresh setup must not leave an uninitialized SQLite file.
+            now = instant(now if now is not None else datetime.now(UTC))
+            config = self.coach.config()
+            day = now.astimezone(ZoneInfo(config['timezone'])).date().isoformat()
+            slot = now.replace(second=0, microsecond=0)
+            minutes = window_minutes(day, config)
+            if slot not in minutes:
+                raise ValueError('test requires the current allowed day and notification window')
+            from .coaching import eligible
+            tasks = [task for task in self.coach.tasks() if eligible(task, now)]
+            if not tasks:
+                raise ValueError('test requires an eligible task')
+            with self.coach._transaction() as state:
+                if state['paused']:
+                    raise ValueError('globally paused; test does not clear pause')
+                if state['episode'] is not None:
+                    raise ValueError('test requires no existing episode; active and stopped plans are not replaceable')
+                if state['last_tick'] is not None and now < instant(state['last_tick']):
+                    raise ValueError('clock regressed; test refused')
+                task = choose_task(tasks, now, config['timezone'], self.coach.rng, state['recent'])
+                event = dict(token=uuid.uuid4().hex, index=0, slot=slot.isoformat(),
+                             expires=min(slot + timedelta(minutes=10), minutes[-1] + timedelta(minutes=1)).isoformat(),
+                             state='planned', receipt=None)
+                episode = dict(day=day, task_id=task['id'], binding=runtime['route']['binding'], config=config,
+                               events=[event], stopped=None, purpose='one-check-in-test')
+                state.update(episode=episode, last_tick=now.isoformat(), recent=(state['recent'] + [task['id']])[-7:])
+                return dict(test_prepared=True, wakeAgent=False, episode=episode)
 
     def preflight(self, *, now=None):
         route = self.status()['route']
@@ -383,6 +476,10 @@ def add_parser(commands):
     native = operations.add_parser('native-plan', help='Emit wrapper and initially paused cron argv; does not install or execute')
     for option in ('profile-home', 'python', 'helper', 'hermes'):
         native.add_argument('--' + option, required=True)
+    test = operations.add_parser('prepare-test', help='Explicitly prepare ONE due onboarding check-in; no send; requires no existing episode and empty outbox')
+    test.add_argument('--confirm-test', action='store_true')
+    restart = operations.add_parser('restart', help='Explicitly replan an untouched stopped episode for today only; never sends')
+    restart.add_argument('--confirm-restart', action='store_true')
     configure = operations.add_parser('configure')
     configure.add_argument('--route', type=json.loads, required=True)
     configure.add_argument('--confirm-setup', action='store_true')
@@ -411,6 +508,10 @@ def run_cli(directory, args):
     operation = args.runtime_command
     if operation == 'native-plan':
         return driver.native_plan(args.profile_home, python=args.python, helper=args.helper, hermes=args.hermes)
+    if operation == 'prepare-test':
+        return driver.prepare_test(confirm=args.confirm_test)
+    if operation == 'restart':
+        return driver.restart(confirm=args.confirm_restart)
     if operation == 'configure':
         return driver.configure(args.route, confirm=args.confirm_setup)
     if operation in ('preflight', 'status'):
