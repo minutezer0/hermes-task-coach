@@ -15,12 +15,15 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 DEFAULT_CONFIG = {
     "timezone": "UTC", "weekdays": ["mon", "tue", "wed", "thu", "fri"],
     "notification_start": "09:00", "notification_end": "17:00",
-    "max_unanswered_followups": 2, "min_followup_interval": 30,
+    "max_tasks_per_window": 3, "max_unanswered_followups": 2, "min_followup_interval": 30,
     "max_followup_interval": 120, "destination": None, "automation_enabled": False,
 }
 
 
 def validate_config(config):
+    # Missing only this new preference is the historical format, never new defaults.
+    if isinstance(config, dict) and set(config) == set(DEFAULT_CONFIG) - {"max_tasks_per_window"}:
+        config = dict(config, max_tasks_per_window=1)
     if not isinstance(config, dict) or set(config) != set(DEFAULT_CONFIG):
         raise ValueError("invalid configuration fields")
     try:
@@ -41,6 +44,8 @@ def validate_config(config):
         minutes.append(hour * 60 + minute)
     if minutes[1] <= minutes[0]:
         raise ValueError("notification window must end after start; overnight windows are not supported")
+    if type(config["max_tasks_per_window"]) is not int or not 1 <= config["max_tasks_per_window"] <= 10:
+        raise ValueError("maximum tasks per window must be an integer 1..10")
     count = config["max_unanswered_followups"]
     low, high = config["min_followup_interval"], config["max_followup_interval"]
     if any(type(value) is not int for value in (count, low, high)) or not 0 <= count <= 20 or not 1 <= low <= high <= 1440:
@@ -136,7 +141,8 @@ def run(argv=None):
         "setup",
         description="Configure local task coaching. No jobs or delivery are enabled.",
         epilog="Defaults: UTC; weekdays mon,tue,wed,thu,fri; window 09:00–17:00; "
-        "2 unanswered followups; intervals 30–120 minutes. Intervals must be 1..1440 "
+        "up to 3 distinct tasks per window (maximum 1..10); "
+        "2 unanswered followups per task; intervals 30–120 minutes. Intervals must be 1..1440 "
         "minutes and followups 0..20, fitting within a same-day window at the minimum "
         "interval. Choose local tasks or preferences for already-configured Discord "
         "check-ins; setup never connects messaging or enables delivery. "
@@ -146,7 +152,7 @@ def run(argv=None):
     setup.add_argument("--update", action="store_true", help="explicitly update an existing configuration")
     for field in ("timezone", "weekdays", "notification-start", "notification-end", "destination"):
         setup.add_argument("--" + field)
-    for field in ("max-unanswered-followups", "min-followup-interval", "max-followup-interval"):
+    for field in ("max-tasks-per-window", "max-unanswered-followups", "min-followup-interval", "max-followup-interval"):
         setup.add_argument("--" + field, type=int)
     commands.add_parser("list")
     commands.add_parser("export")
@@ -250,6 +256,16 @@ def run(argv=None):
                 answer = input().strip()
                 if answer:
                     changes[field] = answer.split(",") if field == "weekdays" else int(answer) if type(default) is int else answer
+            if mode == 'discord' and 'max_tasks_per_window' not in changes:
+                label = 'Current' if existing else 'Default'
+                print(f"{label} maximum distinct tasks per window: {config['max_tasks_per_window']}. A reply stops only that task's follow-ups; later tasks remain scheduled.", file=sys.stderr)
+                print('Keep or customize? [keep]: ', end='', file=sys.stderr, flush=True)
+                choice = input().strip().lower() or 'keep'
+                if choice not in ('keep', 'customize'):
+                    raise ValueError('choose keep or customize')
+                if choice == 'customize':
+                    print('Maximum distinct tasks per window (1..10): ', end='', file=sys.stderr, flush=True)
+                    changes['max_tasks_per_window'] = int(input().strip())
         config.update(changes)
         validate_config(config)
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)

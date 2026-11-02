@@ -6,6 +6,26 @@ native `hermes send` as an argument array, not a shell command. The core task an
 coaching engine remain transport-neutral. Only Discord history is implemented;
 unsupported platforms are rejected, never silently allowed to follow up.
 
+## Multiple tasks in one daily window
+
+`max_tasks_per_window` defaults to 3 for new stores and accepts integers 1..10.
+Existing configurations without the key retain 1 until an explicit setup update.
+Ask the maximum-tasks question only for proactive check-ins, showing the default
+or current saved value before offering to keep it or customize.
+
+Each distinct selected task has its own opener and bounded follow-ups. A reply
+stops only the matching task's follow-ups; later task check-ins remain scheduled.
+Global pause, changed configuration/binding and uncertain delivery still suppress
+unattended sends. Sequences are planned without overlap and with an inter-task
+gap of at least 30 minutes (or the saved minimum follow-up interval if larger).
+Fewer eligible tasks or insufficient window space produces fewer sequences.
+Context returns an explicitly targeted confirmed task, or the latest confirmed
+receipt when only one distinct task is represented. Untargeted multi-task context
+returns null rather than guessing; future planned tasks are never returned.
+Keep the exact event token and receipt anchor: never apply an older task's
+engagement to a later task. An explicit one-check-in test stays one opener with
+no follow-ups or additional tasks, regardless of the maximum.
+
 ## Confirmed onboarding, paused native job
 
 Initialize task preferences with `setup`; this does not enable automation. Ask the
@@ -157,8 +177,8 @@ Prefix each command with the explicit installed helper and consistent data path:
 | `runtime observe --event-token TOKEN --fence FENCE --pages-file PATH` | Validate fresh full history and derive evidence/reply-stop |
 | `runtime dispatch --event-token TOKEN --fence FENCE --hermes PATH` | Exact-token claim, final authorization, durable sending, one native send attempt |
 | `runtime confirm --event-token TOKEN --fence FENCE --pages-file PATH [--message-id ID]` | Exact sent-message readback and receipt reconciliation |
-| `runtime context --binding JSON` | Latest confirmed task ID/receipt plus freshly reread current task (null if deleted) |
-| `runtime engagement --binding JSON --pages-file PATH` | Derive persistent owner engagement, stop current matching episode, return context |
+| `runtime context --binding JSON [--reply-to-message-id ID]` | Exact target receipt/current task, or latest receipt only when one distinct task is known; null for unrelated targets or multiple tasks without a target |
+| `runtime engagement --binding JSON --pages-file PATH [--reply-to-message-id TARGET --inbound-message-id ID]` | Attribute captured owner posts, stop only their matching task sequences, return the newest owner's context or null; paired flags select one trusted inbound reply |
 | `coach pause` / `coach resume` / `coach status` | Persistent controls and readback; resume never revives stopped episodes |
 
 Production CLI has no synthetic clock or RNG flags. API tests may inject clocks.
@@ -303,13 +323,68 @@ limitations that prevent exact send readback mean keep the job paused. History
 comes from agent tool captures, not cryptographic provenance: the agent/operator
 must use actual native tool output, not manually assert qualification.
 
-Only persistent posts by the exact nonbot owner after the anchor engage; textless
-attachment posts count. Other users and bots do not. Evidence fields are derived
-by the helper; callers cannot enable followups with complete/engaged/qualified
-booleans. Failure to refresh evidence invalidates the old evidence for that draft.
-Confirm also checks owner posts newer than the sent message and immediately stops
-if present. No typing indicators, read receipts, transient/deleted posts, voice
-presence, or cross-session memory claims are made.
+### Reply attribution and trusted capture interface
+
+Current native Discord `fetch_messages` returns `id`, `content`, `author`,
+`timestamp`, `edited_timestamp`, `attachments`, `reactions`, and `pinned`.
+It does **not** expose `message_reference`. History order alone cannot tell
+whether an owner post replies to task A, task B, or an unrelated message. Do not
+add invented references to `result`, infer targets from message text, or claim
+history-only delayed-reply attribution has been verified live.
+
+When a trusted inbound event/adapter actually exposes a reply target for the exact
+bound owner and destination, preserve it separately from the unmodified raw result.
+An optional page-envelope field supplies only those known targets, keyed by an
+owner message ID present on that page:
+
+```json
+"reply_targets": {"300": "100"}
+```
+
+Here the fictional owner message `300` explicitly replies to confirmed check-in
+`100`. A value of `null` is allowed **only** when trusted metadata positively says
+that post has no reply target; absence of a mapping means unknown, not null. Each
+entry must match a captured nonbot owner post on that page. Malformed IDs,
+nonowner posts, missing messages, or conflicts with available raw references
+reject the capture. A raw reference from a metadata-capable adapter is also
+supported and validated, including its channel. This is a trusted capture contract,
+not an implemented gateway hook, signature, or source of metadata that the current
+Discord history tool lacks. If trusted inbound metadata is not exposed to the
+caller, leave the mapping absent and accept the conservative block.
+
+For one trusted inbound explicit reply, `runtime context --binding JSON
+--reply-to-message-id TARGET` returns that exact receipt and current task.
+`runtime engagement --binding JSON --pages-file PATH --reply-to-message-id TARGET
+--inbound-message-id ID` requires **both** IDs and verifies the exact owner message
+in fresh history through the target receipt. Flags select only that inbound post;
+observe/confirm still require complete interval captures with any available trusted
+metadata for each post. Unknown/non-coach targets return no coaching context and
+do not count as engagement. Do not substitute a guessed target to avoid null.
+
+Without a target, context returns the latest receipt only while the binding's
+confirmed journal contains one distinct task. With multiple tasks it returns null,
+including across days: audit receipts are retained, not silently forgotten. For
+history-only engagement, use `runtime status` to find the latest confirmed receipt
+anchor and capture through it. Persistent nonbot owner activity can use legacy
+single-task temporal engagement when only one prior task is a candidate; this
+stops prompts for that sole task, but does **not** prove a reply reference or exclude
+unrelated activity. A known unthreaded post similarly uses the latest prior
+receipt. An explicit reference always takes precedence: replies to unrelated
+messages do not engage, and delayed replies to A do not stop B. Every owner post
+is attributed independently; the newest owner's attribution determines the
+engagement return context, while earlier correctly attributed posts can still
+stop their own task sequences. Attachments count; other users and bots do not.
+
+With multiple prior tasks and missing target metadata, the driver cannot safely
+attribute the owner post. Engagement returns `engaged:false`, `context:null`,
+`error:"ambiguous-engagement"`; observe saves incomplete, error-bearing evidence;
+confirm still records the verified delivery truth. All three block the current
+window with `ambiguous-engagement`, not a guessed `owner-engaged` task. Later
+captures/clarification do not revive the stopped window. No owner posts means no
+attribution ambiguity and complete negative evidence can authorize followups.
+Failed refresh still invalidates earlier draft evidence. No typing indicators,
+read receipts, transient/deleted posts, voice presence, or cross-session memory
+claims are made.
 
 ## Final-send authorization and races
 

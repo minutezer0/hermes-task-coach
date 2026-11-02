@@ -64,15 +64,26 @@ store exists (check only the approved active data scope):
    required; do not imply other platforms or account provisioning are supported.
    Confirm the exact route from trusted context. Ask only for missing timezone
    and allowed days/times in plain language: “When is it okay for me to check in?”
-   Once the window is known, show the current saved follow-up settings (or the
+   Once the window is known, ask a separate maximum-tasks question first:
+
+   “How many different tasks would you like me to check in about during that
+   window? The default is up to 3 distinct tasks. Keep the default of 3, or customize?”
+
+   For an existing store, show its actual saved maximum and ask whether to keep
+   that value or customize; legacy configurations without this setting retain 1.
+   Accept integers 1 through 10. This is a maximum, not a quota: fewer eligible
+   tasks or insufficient window space means fewer check-ins. Each task has its
+   own unanswered follow-up limit. A reply stops that task's follow-ups while
+   later task check-ins remain scheduled. Never interpret a reply as completion.
+   Then show the current saved follow-up settings (or the
    defaults for a new store) before asking whether to keep or customize them.
    For the standard defaults, use this pattern with the user's confirmed window:
 
    “Every day, 9am–7pm Pacific. The default follow-up settings are:
-   - Up to 2 follow-ups if you haven’t replied.
+   - Up to 2 follow-ups per task if you haven’t replied.
    - Randomized spacing of 30–120 minutes between check-ins.
-   - A reply stops further follow-ups for that day’s coaching session; it doesn’t
-     mark the task complete.
+   - A reply stops further follow-ups for that task; later task check-ins remain
+     scheduled. It doesn’t mark the task complete.
 
    Use those with your daily 9am–7pm Pacific window, or customize?”
 
@@ -87,7 +98,7 @@ Do not wait for agent-terminal stdin. These generic notification flags are only
 for users who actually chose check-ins (use confirmed values):
 
 ```sh
-python3 "<skill_dir>/scripts/task-coach.py" setup --timezone UTC --weekdays mon,tue,wed,thu,fri --notification-start 09:00 --notification-end 17:00 --max-unanswered-followups 2 --min-followup-interval 30 --max-followup-interval 120
+python3 "<skill_dir>/scripts/task-coach.py" setup --timezone UTC --weekdays mon,tue,wed,thu,fri --notification-start 09:00 --notification-end 17:00 --max-tasks-per-window 3 --max-unanswered-followups 2 --min-followup-interval 30 --max-followup-interval 120
 python3 "<skill_dir>/scripts/task-coach.py" setup
 python3 "<skill_dir>/scripts/task-coach.py" list
 ```
@@ -257,11 +268,26 @@ low-level `coach tick`/`ack` interface, for unattended delivery.
 Cron sessions are not normal inbound conversations. Do not assume the earlier
 check-in or task is in the normal turn's model context. With the user's approved
 scoped instruction, use trusted inbound identifiers to run `runtime context
---binding JSON`; fetch history to its exact receipt ID and run `runtime engagement
---binding JSON --pages-file FILE`. Only persistent posts by the bound nonbot owner
-count; attachments count, unrelated users/bots do not. Context rereads the current
-task; if missing, closed or snoozed, acknowledge that rather than reviving the
-old draft. If a reply interrupts dispatch/confirmation and context is null, inspect
+--binding JSON`. If trusted inbound metadata exposes an explicit target, add
+`--reply-to-message-id TARGET`; fetch fresh history through that exact receipt,
+then run `runtime engagement --binding JSON --pages-file FILE
+--reply-to-message-id TARGET --inbound-message-id OWNER_MESSAGE_ID`.
+Both engagement flags are required together; the exact bound owner's post must
+appear in the capture. An unrelated target returns null, not the latest task.
+For captures used by observe/confirm, preserve raw tool results and carry known
+reply targets separately in the documented `reply_targets` page envelope.
+Current Discord `fetch_messages` does **not** return reply references. Never
+invent them, infer targets from text/order, or equate absent metadata with a known
+unthreaded post. Without a trusted target, context is null once multiple distinct
+tasks have confirmed receipts. Inspect `runtime status` for the latest receipt
+anchor, capture fresh history and run engagement without the optional flags.
+Ambiguous owner activity returns null context and `ambiguous-engagement`, and
+blocks the window rather than attributing it to the newest task. Ask which task
+the owner means, and preserve that block; clarification does not reopen delivery.
+Only persistent posts by the bound nonbot owner count; attachments count, other
+users/bots and explicit replies to non-coach messages do not. Context rereads the
+current task; if missing, closed or snoozed, acknowledge that rather than reviving
+the old draft. If a reply interrupts dispatch/confirmation and context is null, inspect
 `runtime status` before treating null as no coaching history: an unconfirmed
 `sending` row may exist. Reconcile that exact attempt using fresh raw history and
 `runtime confirm`, then run context/engagement; never resend or claim engagement

@@ -92,6 +92,21 @@ def window_minutes(day, config):
     return result
 
 
+def sequences(episode):
+    return [episode] + episode.get('next_tasks', []) if episode else []
+
+
+def event_episode(episode, token):
+    return next((s for s in sequences(episode) if any(e['token'] == token for e in s['events'])), None)
+
+
+def window_stop(episode, reason):
+    if 'next_tasks' in episode:
+        episode['window_stopped'] = episode['window_stopped'] or reason
+    else:
+        episode['stopped'] = episode['stopped'] or reason
+
+
 def validate_state(state):
     """Reject incompatible or partial state; never recreate a questionable episode."""
     from .cli import validate_config
@@ -112,6 +127,43 @@ def validate_state(state):
             instant(state['last_tick'])
         episode = state['episode']
         if episode is None:
+            return
+        if isinstance(episode, dict) and 'next_tasks' in episode:
+            if set(episode) != {'day', 'task_id', 'binding', 'config', 'events', 'stopped', 'next_tasks', 'window_stopped'}:
+                raise ValueError('invalid coaching state')
+            if not isinstance(episode['next_tasks'], list) or not episode['next_tasks']:
+                raise ValueError('invalid coaching state')
+            if episode['window_stopped'] is not None and (not isinstance(episode['window_stopped'], str) or not episode['window_stopped'].strip()):
+                raise ValueError('invalid coaching state')
+            items = [dict((k, v) for k, v in episode.items() if k not in ('next_tasks', 'window_stopped'))] + episode['next_tasks']
+            config = validate_config(episode['config'])
+            if len(items) > config['max_tasks_per_window']:
+                raise ValueError('invalid coaching state')
+            tasks, tokens, messages = set(), set(), set()
+            previous = None
+            consumed = 0
+            for item in items:
+                if not isinstance(item, dict) or set(item) != {'day', 'task_id', 'binding', 'config', 'events', 'stopped'}:
+                    raise ValueError('invalid coaching state')
+                validate_state(dict(state, episode=item))
+                if any(item[k] != episode[k] for k in ('day', 'config', 'binding')) or not item['events'] or item['task_id'] in tasks:
+                    raise ValueError('invalid coaching state')
+                tasks.add(item['task_id'])
+                if previous is not None and (instant(item['events'][0]['slot']) - previous).total_seconds() < max(30, config['min_followup_interval']) * 60:
+                    raise ValueError('invalid coaching state')
+                previous = instant(item['events'][-1]['expires'])
+                for event in item['events']:
+                    if event['token'] in tokens:
+                        raise ValueError('invalid coaching state')
+                    tokens.add(event['token'])
+                    consumed += event['index'] > 0 and event['state'] != 'planned'
+                    if event['receipt']:
+                        key = event['receipt']['message_id']
+                        if key in messages:
+                            raise ValueError('invalid coaching state')
+                        messages.add(key)
+            if consumed > len(state['evidence_ids']):
+                raise ValueError('invalid coaching state')
             return
         required = {'day', 'task_id', 'binding', 'config', 'events', 'stopped'}
         if not (isinstance(episode, dict) and required <= set(episode) <= required | {'purpose'}):
@@ -292,7 +344,7 @@ class Coach:
 
     def status(self):
         with self.transaction() as state:
-            return dict(state, transport='external-bridge-required', deliveries=sum(e['state'] == 'delivered' for e in (state['episode'] or {}).get('events', [])))
+            return dict(state, transport='external-bridge-required', deliveries=sum(e['state'] == 'delivered' for s in sequences(state['episode']) for e in s['events']))
 
     def preview(self, *, binding, now=None, seed=None):
         validate_binding(binding)
@@ -309,25 +361,26 @@ class Coach:
         with self.transaction() as state:
             state['paused'] = paused
             if paused and state['episode']:
-                state['episode']['stopped'] = state['episode']['stopped'] or 'paused'
+                window_stop(state['episode'], 'paused')
             return dict(paused=paused, transport='external-bridge-required')
 
     def failed(self, event_token, binding):
         validate_binding(binding)
         with self.transaction() as state:
-            episode = state['episode']
+            episode = event_episode(state['episode'], event_token)
             event = next((e for e in episode['events'] if e['token'] == event_token), None) if episode else None
             if not episode or episode['binding'] != binding or not event or event['state'] not in ('claimed', 'failed'):
                 raise ValueError('failure does not match a claimed event and route')
             event['state'] = 'failed'
             episode['stopped'] = episode['stopped'] or 'failed-delivery'
+            window_stop(state['episode'], 'failed-delivery')
             return dict(stopped=episode['stopped'])
 
     def stop(self, event_token, binding):
         validate_binding(binding)
         with self.transaction() as state:
-            episode = state['episode']
-            if not episode or episode['binding'] != binding or not any(e['token'] == event_token for e in episode['events']):
+            episode = event_episode(state['episode'], event_token)
+            if not episode or episode['binding'] != binding:
                 raise ValueError('engagement does not match current event and owner binding')
             episode['stopped'] = episode['stopped'] or 'owner-engaged'
             return dict(stopped=episode['stopped'])
@@ -336,7 +389,34 @@ class Coach:
         minutes = window_minutes(day, config)
         if future_only:
             minutes = [minute for minute in minutes if minute > now]
-        task = choose_task(self.tasks(), now, config['timezone'], self.rng, recent) if minutes else None
+        tasks = [t for t in self.tasks() if eligible(t, now)]
+        gap = max(30, config['min_followup_interval'])
+        count = min(config['max_tasks_per_window'], len(tasks), len(minutes) // (10 + gap))
+        if count > 1:
+            result = []
+            for n in range(count):
+                # Partition real UTC opportunities; reserve the inter-task gap.
+                block = minutes[n * len(minutes) // count:(n + 1) * len(minutes) // count]
+                end = block[-1] + timedelta(minutes=1) - (timedelta(minutes=gap) if n < count - 1 else timedelta())
+                block = [t for t in block if t + timedelta(minutes=10) <= end]
+                if not block:
+                    break
+                task = choose_task(tasks, now, config['timezone'], self.rng, recent)
+                tasks = [t for t in tasks if t['id'] != task['id']]
+                slot = self.rng.choice(block[:max(1, len(block)//2)])
+                events = []
+                for index in range(config['max_unanswered_followups'] + 1):
+                    events.append(dict(token=uuid.uuid4().hex, index=index, slot=slot.isoformat(), expires=min(slot + timedelta(minutes=self.opportunity_minutes), end).isoformat(), state='planned', receipt=None))
+                    candidates = [t for t in block if config['min_followup_interval'] * 60 <= (t-slot).total_seconds() <= config['max_followup_interval'] * 60]
+                    if not candidates:
+                        break
+                    slot = self.rng.choice(candidates)
+                result.append(dict(day=day, task_id=task['id'], binding=binding, config=config, events=events, stopped=None))
+            first = result[0]
+            if len(result) > 1:
+                first.update(next_tasks=result[1:], window_stopped=None)
+            return first
+        task = choose_task(tasks, now, config['timezone'], self.rng, recent) if minutes else None
         events = []
         if task and minutes:
             slot = self.rng.choice(minutes)
@@ -354,6 +434,7 @@ class Coach:
 
     def tick(self, *, now=None, binding=None, evidence=None, expected_token=None, prepare_only=False):
         now = instant(now if now is not None else datetime.now(UTC))
+        from .cli import validate_config
         config = self.config()
         if binding is None:
             return dict(wakeAgent=False, reason='external-bridge-required')
@@ -362,65 +443,92 @@ class Coach:
         with self.transaction() as state:
             if state['last_tick'] is not None and now < instant(state['last_tick']):
                 if state['episode']:
-                    state['episode']['stopped'] = state['episode']['stopped'] or 'clock-regressed'
+                    window_stop(state['episode'], 'clock-regressed')
                 return dict(wakeAgent=False, reason='clock-regressed')
             state['last_tick'] = now.isoformat()
             if state['paused']:
                 return dict(wakeAgent=False, reason='paused')
             episode = state['episode']
-            if episode and (episode['config'] != config or episode['binding'] != binding):
+            if episode and (validate_config(episode['config']) != config or episode['binding'] != binding):
                 old_day = now.astimezone(ZoneInfo(episode['config']['timezone'])).date().isoformat()
                 if old_day <= episode['day']:
-                    episode['stopped'] = episode['stopped'] or 'configuration-changed'
-                    return dict(wakeAgent=False, reason=episode['stopped'])
+                    window_stop(episode, 'configuration-changed')
+                    return dict(wakeAgent=False, reason=episode.get('window_stopped') or episode['stopped'])
             if episode is None or episode['day'] != day:
                 episode = self.plan(day, config, binding, now, state['recent'])
                 state['episode'] = episode
                 if episode['task_id'] is not None:
-                    state['recent'] = (state['recent'] + [episode['task_id']])[-7:]
-            if episode['config'] != config or episode['binding'] != binding:
-                episode['stopped'] = episode['stopped'] or 'configuration-changed'
-            task = next((t for t in self.tasks() if t['id'] == episode['task_id']), None)
-            if not task or not eligible(task, now):
-                episode['stopped'] = episode['stopped'] or 'task-unavailable'
-            if episode['stopped']:
-                return dict(wakeAgent=False, reason=episode['stopped'])
-            local = now.astimezone(ZoneInfo(config['timezone']))
-            if DAYS[local.weekday()] not in config['weekdays'] or not config['notification_start'] <= local.strftime('%H:%M') < config['notification_end']:
-                return dict(wakeAgent=False, reason='outside-window')
-            for event in episode['events']:
-                if event['state'] == 'delivered':
+                    state['recent'] = (state['recent'] + [s['task_id'] for s in sequences(episode)])[-7:]
+            if validate_config(episode['config']) != config or episode['binding'] != binding:
+                window_stop(episode, 'configuration-changed')
+            for sequence in sequences(episode):
+                if sequence['stopped'] not in (None, 'owner-engaged', 'task-unavailable', 'missed-slot'):
+                    window_stop(episode, sequence['stopped'])
+            if episode.get('window_stopped'):
+                return dict(wakeAgent=False, reason=episode['window_stopped'])
+            # An unconfirmed attempt blocks the whole window even if the owner
+            # engaged meanwhile. Never hide ambiguity by advancing to another task.
+            for sequence in sequences(episode):
+                for event in sequence['events']:
+                    if event['state'] == 'claimed':
+                        if now >= instant(event['expires']):
+                            window_stop(episode, 'unconfirmed-delivery')
+                        return dict(wakeAgent=False, reason=episode.get('window_stopped') or episode['stopped'] or 'pending-delivery')
+            result = dict(wakeAgent=False, reason='complete')
+            for sequence in sequences(episode):
+                if sequence['stopped']:
+                    result = dict(wakeAgent=False, reason=sequence['stopped'])
                     continue
-                if event['state'] == 'claimed':
-                    if now >= instant(event['expires']):
-                        episode['stopped'] = 'unconfirmed-delivery'
-                    return dict(wakeAgent=False, reason=episode['stopped'] or 'pending-delivery')
-                if event['state'] != 'planned':
-                    return dict(wakeAgent=False, reason='event-not-planned')
+                result = self._tick_sequence(sequence, state, now, binding, config, evidence, expected_token, prepare_only)
+                if result['wakeAgent'] or result['reason'] not in ('complete', 'missed-slot', 'task-unavailable', 'owner-engaged'):
+                    return result
+            return result
+
+    def _tick_sequence(self, episode, state, now, binding, config, evidence, expected_token, prepare_only):
+        task = next((t for t in self.tasks() if t['id'] == episode['task_id']), None)
+        if not task or not eligible(task, now):
+            episode['stopped'] = episode['stopped'] or 'task-unavailable'
+        if episode['stopped']:
+            return dict(wakeAgent=False, reason=episode['stopped'])
+        local = now.astimezone(ZoneInfo(config['timezone']))
+        if DAYS[local.weekday()] not in config['weekdays'] or not config['notification_start'] <= local.strftime('%H:%M') < config['notification_end']:
+            return dict(wakeAgent=False, reason='outside-window')
+        for event in episode['events']:
+            if event['state'] == 'delivered':
+                continue
+            if event['state'] == 'claimed':
                 if now >= instant(event['expires']):
-                    episode['stopped'] = 'missed-slot'
-                    return dict(wakeAgent=False, reason='missed-slot')
-                if now < instant(event['slot']):
-                    return dict(wakeAgent=False, reason='not-due')
-                if expected_token is not None and event['token'] != expected_token:
-                    return dict(wakeAgent=False, reason='event-token-mismatch')
-                if prepare_only:
-                    return dict(wakeAgent=True, intent=dict(event_token=event['token'], index=event['index'], task_id=episode['task_id'], binding=binding, expires=event['expires']), previous=episode['events'][event['index']-1] if event['index'] else None, task=task)
-                if event['index']:
-                    previous = episode['events'][event['index'] - 1]
-                    elapsed = (now - instant(previous['receipt']['delivered_at'])).total_seconds()
-                    if elapsed < config['min_followup_interval'] * 60:
-                        return dict(wakeAgent=False, reason='minimum-delivery-spacing')
-                    if elapsed > config['max_followup_interval'] * 60:
-                        episode['stopped'] = 'maximum-delivery-spacing'
-                        return dict(wakeAgent=False, reason=episode['stopped'])
-                    if not self.check_evidence(evidence, previous, binding, now, state):
-                        episode['stopped'] = 'unverified-engagement'
-                        return dict(wakeAgent=False, reason=episode['stopped'])
-                event['state'] = 'claimed'
-                event['claimed_at'] = now.isoformat()
-                return dict(wakeAgent=True, intent=dict(event_token=event['token'], index=event['index'], task_id=episode['task_id'], binding=binding, expires=event['expires'], kind='opener' if not event['index'] else 'followup'))
-            return dict(wakeAgent=False, reason='complete')
+                    episode['stopped'] = 'unconfirmed-delivery'
+                return dict(wakeAgent=False, reason=episode['stopped'] or 'pending-delivery')
+            if event['state'] != 'planned':
+                return dict(wakeAgent=False, reason='event-not-planned')
+            if now >= instant(event['expires']):
+                episode['stopped'] = 'missed-slot'
+                return dict(wakeAgent=False, reason='missed-slot')
+            if now < instant(event['slot']):
+                return dict(wakeAgent=False, reason='not-due')
+            if expected_token is not None and event['token'] != expected_token:
+                return dict(wakeAgent=False, reason='event-token-mismatch')
+            if prepare_only:
+                return dict(wakeAgent=True, intent=dict(event_token=event['token'], index=event['index'], task_id=episode['task_id'], binding=binding, expires=event['expires']), previous=episode['events'][event['index']-1] if event['index'] else None, task=task)
+            if event['index']:
+                previous = episode['events'][event['index'] - 1]
+                elapsed = (now - instant(previous['receipt']['delivered_at'])).total_seconds()
+                if elapsed < config['min_followup_interval'] * 60:
+                    return dict(wakeAgent=False, reason='minimum-delivery-spacing')
+                if elapsed > config['max_followup_interval'] * 60:
+                    episode['stopped'] = 'maximum-delivery-spacing'
+                    window_stop(state['episode'], 'maximum-delivery-spacing')
+                    return dict(wakeAgent=False, reason=episode['stopped'])
+                if not self.check_evidence(evidence, previous, binding, now, state):
+                    episode['stopped'] = 'unverified-engagement'
+                    window_stop(state['episode'], 'unverified-engagement')
+                    return dict(wakeAgent=False, reason=episode['stopped'])
+            event['state'] = 'claimed'
+            event['claimed_at'] = now.isoformat()
+            return dict(wakeAgent=True, intent=dict(event_token=event['token'], index=event['index'], task_id=episode['task_id'], binding=binding, expires=event['expires'], kind='opener' if not event['index'] else 'followup'))
+        return dict(wakeAgent=False, reason='complete')
+
 
     @staticmethod
     def check_evidence(evidence, previous, binding, now, state):
@@ -460,7 +568,7 @@ class Coach:
             raise ValueError('receipt identifiers must be nonempty opaque strings')
         delivered = instant(receipt['delivered_at'])
         with self.transaction() as state:
-            episode = state['episode']
+            episode = event_episode(state['episode'], receipt['event_token'])
             if not episode or receipt['binding'] != episode['binding']:
                 raise ValueError('receipt binding does not match current episode')
             event = next((e for e in episode['events'] if e['token'] == receipt['event_token']), None)
@@ -477,6 +585,7 @@ class Coach:
                 raise ValueError('replayed message identifier')
             if reconcile and now >= instant(event['expires']):
                 episode['stopped'] = episode['stopped'] or 'late-reconciled'
+                window_stop(state['episode'], 'late-reconciled')
             event['state'] = 'delivered'
             event['receipt'] = receipt
             state['message_ids'].append(message_key)

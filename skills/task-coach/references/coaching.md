@@ -25,7 +25,8 @@ catches process failure, malformed output and timeouts.
 - `ack --receipt JSON`: strict on-time positive receipt. Exact repeats are
   idempotent; unknown/unclaimed/wrong-route/expired/conflicting receipts fail.
 - `failed --event-token TOKEN --binding JSON`: stop a claimed event and episode.
-- `engaged --event-token TOKEN --binding JSON`: stop an episode, not its task.
+- `engaged --event-token TOKEN --binding JSON`: stop follow-ups for the matching
+  task sequence, not the task itself or other planned task sequences.
 - `preview --binding JSON [--at AWARE_TIMESTAMP] [--seed INTEGER]`: isolated
   development plan, does not open coaching state. Preview tokens cannot be acked.
 
@@ -91,11 +92,25 @@ incompatible or corrupt stores are never silently reset or repaired.
 Tasks must be open and not currently snoozed. Priority weights are low=1,
 normal=2, high=4; approaching deadlines add weight and overdue tasks add more.
 Date-only deadlines use local midnight. Avoid the seven recent daily selections
-when alternatives exist. Plan one task and a randomized opener minute per local
-day, followed by up to the configured cap of randomized slots satisfying min/max
-spacing. Near the end of the same-day window fewer followups may fit. Slots are
+when alternatives exist. Plan up to `max_tasks_per_window` distinct eligible tasks
+per local day/window. Each task has a randomized opener minute followed by up to
+the configured cap of randomized follow-up slots satisfying min/max spacing.
+Sequences do not overlap and reserve at least 30 minutes (or the configured
+minimum follow-up interval if greater) between their opportunities. Too few tasks
+or too little window space yields fewer sequences, never repeats to fill a quota.
+Near the end of a sequence's allotted block fewer followups may fit. Slots are
 real UTC instants: DST gaps have none and folded local minutes may occur twice.
 
+The default maximum tasks per configured daily window is 3, with integers 1..10
+accepted. Configurations missing the key keep the historical maximum of 1 until
+an explicit setup update. A reply stops only its task sequence's follow-ups;
+later task check-ins remain scheduled. This requires accurate attribution in the
+native driver: current Discord history omits reply references, so ambiguous
+multi-task owner activity without trusted target metadata stops the window with
+`ambiguous-engagement`, not `owner-engaged` on a guessed task. See the native
+runtime capture interface; absent metadata cannot prove which check-in received
+a reply. Global pause and unsafe delivery/history conditions still suppress
+automatic sends across the window.
 The default low-level opportunity lasts one minute for backward compatibility;
 the native driver uses up to ten minutes, capped at the window end. Independent
 final-send authorization limits the claim lease to 120 seconds, and actual

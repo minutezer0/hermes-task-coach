@@ -8,7 +8,7 @@ import sqlite3
 import subprocess
 import uuid
 
-from .coaching import Coach, UTC, instant, safe_path, validate_binding
+from .coaching import Coach, UTC, instant, safe_path, validate_binding, sequences, event_episode
 
 SCHEMA = 'CREATE TABLE runtime (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)'
 
@@ -156,14 +156,14 @@ class Driver:
                     raise ValueError('clock regressed; restart refused')
                 if previous['binding'] != runtime['route']['binding']:
                     raise ValueError('confirmed route does not match the stopped episode binding')
-                if previous['events']:
+                if any(s['events'] for s in sequences(previous)):
                     raise ValueError('restart requires zero prior events, including unclaimed plans')
                 episode = self.coach.plan(day, config, runtime['route']['binding'], now, state['recent'], future_only=True)
                 if episode['task_id'] is None or not episode['events']:
                     raise ValueError('no eligible task or future slots remain today')
                 state['episode'] = episode
                 state['last_tick'] = now.isoformat()
-                state['recent'] = (state['recent'] + [episode['task_id']])[-7:]
+                state['recent'] = (state['recent'] + [s['task_id'] for s in sequences(episode)])[-7:]
                 return dict(restarted=True, wakeAgent=False, previous_stop=previous['stopped'], episode=episode)
 
     def prepare_test(self, *, confirm=False, now=None):
@@ -208,7 +208,10 @@ class Driver:
                 return dict(test_prepared=True, wakeAgent=False, episode=episode)
 
     def preflight(self, *, now=None):
-        route = self.status()['route']
+        runtime = self.status()
+        route = runtime['route']
+        if any(row['state'] == 'sending' for row in runtime['outbox'].values()):
+            return dict(wakeAgent=False, reason='unconfirmed-delivery')
         if route is None:
             return dict(wakeAgent=False, reason='setup-not-confirmed')
         return self.coach.prepare(binding=route['binding'], now=now)
@@ -243,11 +246,13 @@ class Driver:
         from .coaching import DAYS, eligible
         config = self.coach.config()
         state = self.coach.status()
-        episode = state['episode']
+        root = state['episode']
+        episode = event_episode(root, row['token'])
         event = next((e for e in episode['events'] if e['token'] == row['token']), None) if episode else None
         task = next((t for t in self.coach.tasks() if t['id'] == row['task']['id']), None)
         local = now.astimezone(ZoneInfo(config['timezone']))
-        if state['paused'] or not episode or episode['stopped'] or episode['config'] != config or episode['binding'] != row['route']['binding'] or self.status()['route'] != row['route']:
+        from .cli import validate_config
+        if state['paused'] or not episode or root.get('window_stopped') or episode['stopped'] or validate_config(episode['config']) != config or episode['binding'] != row['route']['binding'] or self.status()['route'] != row['route']:
             raise ValueError('episode, pause, configuration or route changed')
         if not event or event['state'] != 'claimed' or not instant(event['claimed_at']) <= now < min(instant(event['expires']), instant(event['claimed_at']) + timedelta(seconds=120)):
             raise ValueError('claim lease expired or event changed')
@@ -333,7 +338,7 @@ class Driver:
             if other['token'] != token and other.get('receipt', {}).get('message_id') == message['id'] and other['route'] == row['route']:
                 raise ValueError('replayed receipt')
         episode = self.coach.status()['episode']
-        if episode and any(e['token'] == token for e in episode['events']):
+        if episode and event_episode(episode, token) is not None:
             self.coach.reconcile(receipt, now=now)
         with self.transaction() as state:
             current = state['outbox'][token]
@@ -342,8 +347,9 @@ class Driver:
                     raise ValueError('conflicting confirmed receipt')
                 return current['receipt']
             current.update(state='confirmed', receipt=receipt)
-        if episode and any(e['token'] == token for e in episode['events']) and any(m['author']['id'] == row['route']['binding']['owner'] and m['author']['bot'] is False for m in messages[:-1]):
-            self.coach.stop(token, row['route']['binding'])
+        _, ambiguous = self.attribute_engagement(messages[:-1], row['route'])
+        if ambiguous:
+            self.block_ambiguous_engagement(row['route']['binding'])
         return receipt
 
     def observe(self, token, fence, pages, *, now=None):
@@ -359,27 +365,82 @@ class Driver:
         anchor = messages[-1]
         if anchor['author']['id'] != row['route']['bot_id'] or anchor['author']['bot'] is not True or instant(anchor['timestamp']) != instant(receipt['delivered_at']):
             raise ValueError('history anchor does not match previous receipt')
-        engaged = any(m['author']['id'] == row['route']['binding']['owner'] and m['author']['bot'] is False for m in messages[:-1])
-        evidence = dict(binding=row['route']['binding'], event_token=previous['token'], message_id=receipt['message_id'], cursor=receipt['cursor'], snapshot_id=uuid.uuid4().hex, observed_at=min(instant(p['observed_at']) for p in pages).isoformat(), complete=True, engaged=engaged, error=None)
+        fallback = dict(row, token=previous['token'], receipt=receipt)
+        targets, ambiguous = self.attribute_engagement(messages[:-1], row['route'], fallback=fallback)
+        engaged = any(target and target['task']['id'] == row['task']['id'] for target in targets)
+        evidence = dict(binding=row['route']['binding'], event_token=previous['token'], message_id=receipt['message_id'], cursor=receipt['cursor'], snapshot_id=uuid.uuid4().hex, observed_at=min(instant(p['observed_at']) for p in pages).isoformat(), complete=not ambiguous, engaged=engaged, error='ambiguous-engagement' if ambiguous else None)
         with self.transaction() as state:
             state['outbox'][token]['evidence'] = evidence
         if engaged:
             self.coach.stop(token, row['route']['binding'])
+        if ambiguous:
+            self.block_ambiguous_engagement(row['route']['binding'])
         return evidence
 
-    def engagement(self, binding, pages, *, now=None):
+    def attribute_engagement(self, messages, route, *, fallback=None):
+        """Attribute each owner message independently; absent metadata is not a reply target."""
+        rows = [r for r in self.status()['outbox'].values()
+                if r['route'] == route and r['state'] == 'confirmed']
+        if fallback and not any(r['token'] == fallback['token'] for r in rows):
+            rows.append(fallback)
+        targets, ambiguous = [], False
+        for message in messages:
+            if message['author']['id'] != route['binding']['owner'] or message['author']['bot'] is not False:
+                continue
+            candidates = [r for r in rows if int(r['receipt']['message_id']) < int(message['id'])
+                          and instant(r['receipt']['delivered_at']) <= instant(message['timestamp'])]
+            reference = message.get('message_reference')
+            if reference is not None:
+                candidates = [r for r in candidates if r['receipt']['message_id'] == reference['message_id']
+                              and reference.get('channel_id', route['channel_id']) == route['channel_id']]
+            elif 'message_reference' not in message and len({r['task']['id'] for r in candidates}) > 1:
+                ambiguous = True
+                targets.append(None)
+                continue
+            targets.append(max(candidates, key=lambda r: (instant(r['receipt']['delivered_at']), int(r['receipt']['message_id']))) if candidates else None)
+        episode = self.coach.status()['episode']
+        for target in targets:
+            if target and episode and episode['binding'] == route['binding'] and event_episode(episode, target['token']) is not None:
+                self.coach.stop(target['token'], route['binding'])
+        return targets, ambiguous
+
+    def block_ambiguous_engagement(self, binding):
+        from .coaching import window_stop
+        with self.coach.transaction() as state:
+            if state['episode'] and state['episode']['binding'] == binding:
+                window_stop(state['episode'], 'ambiguous-engagement')
+
+    def engagement(self, binding, pages, *, now=None, reply_to_message_id=None, inbound_message_id=None):
         now = instant(now or datetime.now(UTC))
-        context = self.context(binding)
-        if not context:
-            raise ValueError('no coaching context for this binding')
-        row = self.status()['outbox'][context['event_token']]
-        messages = validate_pages(pages, row['route'], context['receipt']['message_id'], now)
-        engaged = any(m['author']['id'] == binding['owner'] and m['author']['bot'] is False for m in messages[:-1])
-        if engaged:
-            episode = self.coach.status()['episode']
-            if episode and episode['binding'] == binding and any(e['token'] == row['token'] for e in episode['events']):
-                self.coach.stop(row['token'], binding)
-        return dict(engaged=engaged, context=context)
+        validate_binding(binding)
+        if (reply_to_message_id is None) != (inbound_message_id is None):
+            raise ValueError('trusted inbound reply requires both message and target IDs')
+        if reply_to_message_id is not None and any(not isinstance(value, str) or not value.isdecimal()
+                                                  for value in (reply_to_message_id, inbound_message_id)):
+            raise ValueError('trusted inbound IDs must be decimal strings')
+        rows = [r for r in self.status()['outbox'].values() if r['route']['binding'] == binding and r['state'] == 'confirmed']
+        if not rows:
+            return dict(engaged=False, context=None, error=None)
+        selected = [r for r in rows if r['receipt']['message_id'] == reply_to_message_id] or rows
+        row = max(selected, key=lambda r: (instant(r['receipt']['delivered_at']), int(r['receipt']['message_id'])))
+        messages = validate_pages(pages, row['route'], row['receipt']['message_id'], now)
+        owners = messages[:-1]
+        if inbound_message_id is not None:
+            owners = [m for m in owners if m['id'] == inbound_message_id
+                      and m['author']['id'] == binding['owner'] and m['author']['bot'] is False]
+            if len(owners) != 1:
+                raise ValueError('trusted inbound message is not a captured owner message after the anchor')
+            reference = dict(message_id=reply_to_message_id, channel_id=row['route']['channel_id'])
+            if 'message_reference' in owners[0] and reference_key(owners[0]['message_reference'], row['route']['channel_id']) != reference_key(reference, row['route']['channel_id']):
+                raise ValueError('conflicting reply target metadata')
+            owners = [dict(owners[0], message_reference=reference)]
+        targets, ambiguous = self.attribute_engagement(owners, row['route'])
+        if ambiguous:
+            self.block_ambiguous_engagement(binding)
+            return dict(engaged=False, context=None, error='ambiguous-engagement')
+        target = targets[0] if targets else None
+        context = self.context(binding, reply_to_message_id=target['receipt']['message_id']) if target else None
+        return dict(engaged=target is not None, context=context, error=None)
 
     def native_plan(self, profile_home, *, python, helper, hermes):
         paths = [Path(p) for p in (profile_home, python, helper, hermes)]
@@ -397,19 +458,34 @@ class Driver:
         text += '    if process.returncode == 0 and type(candidate.get("wakeAgent")) is bool:\n        result = candidate\n'
         text += 'except Exception:\n    pass\nprint(json.dumps(result))\n'
         prompt = ('Load task-coach and follow its native runtime protocol. Use helper ' + str(helper_path) + ' with --data-dir ' + str(self.directory.resolve()) + '. Re-run runtime preflight. Compose one human check-in only for its current task. For followups fetch and validate fresh complete Discord history before dispatch. Use runtime draft/observe/dispatch/confirm; native Hermes executable ' + str(hermes_path) + '. Never send directly or retry uncertain attempts. No final chat delivery: delivery is handled by the helper.')
-        instruction = ('For normal inbound messages ONLY matching the explicitly confirmed Task Coach binding, load task-coach, run runtime context --binding with the trusted inbound owner/profile/account/chat/thread, fetch history to the exact receipt anchor and run runtime engagement. Continue that returned task with one useful next-step question; never mark it done without permission. Honor explicit pause via coach pause. Do not apply this instruction to other users or destinations.')
+        instruction = ('For normal inbound messages ONLY matching the explicitly confirmed Task Coach binding, load task-coach and use the trusted inbound owner/profile/account/chat/thread with runtime context --binding. If trusted inbound metadata exposes an explicit reply target, pass --reply-to-message-id to context and pass both --reply-to-message-id and --inbound-message-id to runtime engagement with fresh history through the exact target receipt. Otherwise capture fresh history through the latest confirmed receipt from runtime status and run runtime engagement; never infer a missing reply target from text or history order. Follow the documented reply_targets capture interface only for trusted metadata. Null context or ambiguous-engagement is not task attribution: ask which task, preserve delivery blocks, and never fall back to the latest task. Continue only a returned task with one useful next-step question; never mark it done without permission. Honor explicit pause via coach pause. Do not apply this instruction to other users or destinations.')
         return dict(script_path=str(script), script_text=text,
                     cron_argv=[str(hermes_path), 'cron', 'create', 'every 1m', prompt, '--name', 'task-coach', '--skill', 'task-coach', '--script', str(script.relative_to(profile / 'scripts')), '--deliver', 'local', '--failure-deliver', 'local', '--paused'],
                     inbound_instruction=instruction, initially_paused=True, live_verified=False)
 
-    def context(self, binding):
+    def context(self, binding, *, reply_to_message_id=None):
         validate_binding(binding)
         rows = [row for row in self.status()['outbox'].values() if row['route']['binding'] == binding and row['state'] == 'confirmed']
+        if reply_to_message_id is not None:
+            rows = [row for row in rows if row['receipt']['message_id'] == reply_to_message_id]
+        elif len({row['task']['id'] for row in rows}) > 1:
+            return None
         if not rows:
             return None
-        row = max(rows, key=lambda r: instant(r['receipt']['delivered_at']))
+        row = max(rows, key=lambda r: (instant(r['receipt']['delivered_at']), int(r['receipt']['message_id'])))
         task = next((task for task in self.coach.tasks() if task['id'] == row['task']['id']), None)
         return dict(task=task, task_id=row['task']['id'], event_token=row['token'], receipt=row['receipt'], binding=binding)
+
+
+def reference_key(reference, channel):
+    """Validate an optional reference and compare only routing-relevant fields."""
+    if reference is None:
+        return None
+    if (not isinstance(reference, dict) or not isinstance(reference.get('message_id'), str)
+            or not reference['message_id'].isdecimal()
+            or ('channel_id' in reference and not isinstance(reference['channel_id'], str))):
+        raise ValueError('invalid reply reference')
+    return reference['message_id'], reference.get('channel_id', channel)
 
 
 def validate_pages(pages, route, anchor, now, *, recovery_start=None):
@@ -439,8 +515,26 @@ def _validate_pages(pages, route, anchor, now, *, recovery_start=None):
             raise ValueError('history unavailable or incomplete')
         if 'count' in result and (type(result['count']) is not int or result['count'] != len(batch)):
             raise ValueError('history count does not match messages')
+        reply_targets = page.get('reply_targets', {})
+        if not isinstance(reply_targets, dict) or any(
+                not isinstance(key, str) or not key.isdecimal()
+                or (target is not None and (not isinstance(target, str) or not target.isdecimal()))
+                for key, target in reply_targets.items()):
+            raise ValueError('invalid trusted reply targets')
+        if not set(reply_targets) <= {message['id'] for message in batch}:
+            raise ValueError('trusted reply target has no captured message')
         for message in batch:
             key = message['id']
+            if key in reply_targets:
+                if message['author']['id'] != route['binding']['owner'] or message['author']['bot'] is not False:
+                    raise ValueError('trusted reply target requires the bound owner')
+                target = reply_targets[key]
+                reference = dict(message_id=target, channel_id=route['channel_id']) if target is not None else None
+                if 'message_reference' in message and reference_key(message['message_reference'], route['channel_id']) != reference_key(reference, route['channel_id']):
+                    raise ValueError('conflicting reply target metadata')
+                # Normalize only the validated copy, never invent fields in the raw tool result.
+                message = dict(message, message_reference=reference)
+            reference_key(message.get('message_reference'), route['channel_id'])
             if not isinstance(key, str) or not key.isdecimal() or key in seen or (before is not None and int(key) >= int(before)):
                 raise ValueError('history made no backward progress')
             if not isinstance(message['author']['id'], str) or type(message['author']['bot']) is not bool or not isinstance(message['content'], str) or not isinstance(message['attachments'], list):
@@ -499,7 +593,9 @@ def add_parser(commands):
     for name in ('context', 'engagement'):
         operation = operations.add_parser(name)
         operation.add_argument('--binding', type=json.loads, required=True)
+        operation.add_argument('--reply-to-message-id', help='Explicit target from trusted inbound metadata, never inferred from content')
         if name == 'engagement':
+            operation.add_argument('--inbound-message-id', help='Exact captured owner message; required with --reply-to-message-id')
             operation.add_argument('--pages-file', type=Path, required=True)
 
 
@@ -523,10 +619,10 @@ def run_cli(directory, args):
             raise ValueError('Hermes executable must be absolute')
         return driver.dispatch(args.event_token, args.fence, hermes=args.hermes)
     if operation == 'context':
-        return driver.context(args.binding)
+        return driver.context(args.binding, reply_to_message_id=args.reply_to_message_id)
     pages = json.loads(args.pages_file.read_text(encoding='utf-8'))
     if operation == 'engagement':
-        return driver.engagement(args.binding, pages)
+        return driver.engagement(args.binding, pages, reply_to_message_id=args.reply_to_message_id, inbound_message_id=args.inbound_message_id)
     if operation == 'confirm':
         return driver.confirm(args.event_token, args.fence, pages, message_id=args.message_id)
     return driver.observe(args.event_token, args.fence, pages)
