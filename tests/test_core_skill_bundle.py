@@ -49,13 +49,36 @@ class SkillBundleTest(unittest.TestCase):
         self.assertNotIn("PYTHONPATH=src", text)
         self.assertNotIn("both are needed", text)
 
+    def test_reset_requires_all_writers_quiesced_before_inventory(self):
+        root = Path(__file__).resolve().parents[1]
+        text = (root / "skills/task-coach/references/installation-reset.md").read_text()
+        text = " ".join(text.split())
+        self.assertIn("Quiesce all Task Coach writers", text)
+        self.assertIn("normal inbound conversations, manual CLI commands", text)
+        self.assertIn("Keep them quiesced through inventory, deletion and final readback", text)
+        self.assertIn("If exclusive access cannot be established, stop without deleting", text)
+        self.assertLess(text.index("Quiesce all Task Coach writers"), text.index("Inventory the approved data directory"))
+        self.assertIn("directory flock does not exclude ordinary task/settings writers", text)
+
+    def test_packaging_includes_every_linked_reference(self):
+        root = Path(__file__).resolve().parents[1]
+        skill = root / "skills/task-coach"
+        metadata = tomllib.loads((root / "pyproject.toml").read_text())
+        packaged = {source for sources in metadata["tool"]["setuptools"]["data-files"].values() for source in sources}
+        links = set(re.findall(r"\]\((references/[^)]+)\)", (skill / "SKILL.md").read_text()))
+        self.assertTrue(links)
+        for link in links:
+            with self.subTest(link=link):
+                self.assertTrue((skill / link).is_file())
+                self.assertIn("skills/task-coach/" + link, packaged)
+
     def test_packaging_metadata_declares_the_companion_skill(self):
         root = Path(__file__).resolve().parents[1]
         metadata = tomllib.loads((root / "pyproject.toml").read_text())
         files = metadata["tool"]["setuptools"].get("data-files", {})
         expected = {
             "share/task-coach/skill": ["skills/task-coach/SKILL.md"],
-            "share/task-coach/skill/references": ["skills/task-coach/references/LICENSE", "skills/task-coach/references/coaching.md", "skills/task-coach/references/native-runtime.md"],
+            "share/task-coach/skill/references": ["skills/task-coach/references/LICENSE", "skills/task-coach/references/coaching.md", "skills/task-coach/references/native-runtime.md", "skills/task-coach/references/installation-reset.md"],
             "share/task-coach/skill/scripts": ["skills/task-coach/scripts/task-coach.py"],
             "share/task-coach/skill/scripts/task_coach": [
                 "skills/task-coach/scripts/task_coach/__init__.py",
