@@ -9,6 +9,7 @@ import subprocess
 import uuid
 
 from . import clarification
+from .recurrence import same_cycle, same_snapshot
 from .coaching import Coach, UTC, instant, safe_path, validate_binding, sequences, event_episode
 
 SCHEMA = 'CREATE TABLE runtime (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)'
@@ -72,6 +73,7 @@ class Driver:
                     row = state['outbox'][candidate['token']]
                     if (set(candidate) != {'token', 'task', 'receipt'} or row['state'] != 'confirmed'
                             or candidate['receipt'] != row['receipt'] or candidate['task']['id'] != row['task']['id']
+                            or not same_cycle(candidate['task'], row['task'])
                             or int(candidate['receipt']['message_id']) >= int(message['id'])
                             or instant(candidate['receipt']['delivered_at']) > instant(message['timestamp'])):
                         raise ValueError
@@ -190,7 +192,7 @@ class Driver:
                         db.execute('PRAGMA user_version=1')
                         state = dict(route=None, outbox={})
                     else:
-                        schema = db.execute("SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").fetchall()
+                        schema = db.execute("SELECT sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").fetchall()
                         if db.execute('PRAGMA user_version').fetchone()[0] != 1 or schema != [(SCHEMA,)]:
                             raise ValueError('incompatible runtime schema')
                         rows = db.execute('SELECT id,value FROM runtime').fetchall()
@@ -305,7 +307,7 @@ class Driver:
             if slot not in minutes:
                 raise ValueError('test requires the current allowed day and notification window')
             from .coaching import eligible
-            tasks = [task for task in self.coach.tasks() if eligible(task, now)]
+            tasks = [task for task in self.coach.tasks() if eligible(task, now, config['timezone'])]
             if not tasks:
                 raise ValueError('test requires an eligible task')
             with self.coach._transaction() as state:
@@ -319,7 +321,7 @@ class Driver:
                 event = dict(token=uuid.uuid4().hex, index=0, slot=slot.isoformat(),
                              expires=min(slot + timedelta(minutes=10), minutes[-1] + timedelta(minutes=1)).isoformat(),
                              state='planned', receipt=None)
-                episode = dict(day=day, task_id=task['id'], binding=runtime['route']['binding'], config=config,
+                episode = dict(day=day, task_id=task['id'], cycle_id=task.get('cycle_id'), binding=runtime['route']['binding'], config=config,
                                events=[event], stopped=None, purpose='one-check-in-test')
                 state.update(episode=episode, last_tick=now.isoformat(), recent=(state['recent'] + [task['id']])[-7:])
                 return dict(test_prepared=True, wakeAgent=False, episode=episode)
@@ -406,7 +408,7 @@ class Driver:
             raise ValueError('clarification-missed-opportunity')
         if not event or event['state'] != 'claimed' or not instant(event['claimed_at']) <= now < min(instant(event['expires']), instant(event['claimed_at']) + timedelta(seconds=120)):
             raise ValueError('claim lease expired or event changed')
-        if task != row['task'] or not eligible(task, now) or local.date().isoformat() != episode['day'] or DAYS[local.weekday()] not in config['weekdays'] or not config['notification_start'] <= local.strftime('%H:%M') < config['notification_end']:
+        if not same_snapshot(row['task'], task) or not eligible(task, now, config['timezone']) or local.date().isoformat() != episode['day'] or DAYS[local.weekday()] not in config['weekdays'] or not config['notification_start'] <= local.strftime('%H:%M') < config['notification_end']:
             raise ValueError('task or notification window changed')
         if row['previous']:
             evidence = row['evidence']
@@ -425,7 +427,7 @@ class Driver:
         if row['state'] != 'draft':
             raise ValueError('event already attempted; automatic resend forbidden')
         prepared = self.preflight(now=now)
-        if not prepared['wakeAgent'] or prepared['intent'] != row['intent'] or prepared['task'] != row['task'] or self.status()['route'] != row['route']:
+        if not prepared['wakeAgent'] or prepared['intent'] != row['intent'] or not same_snapshot(row['task'], prepared['task']) or self.status()['route'] != row['route']:
             raise ValueError('draft authorization changed')
         if not clarification.retry_row(row):
             claimed = self.coach.tick(now=now, binding=row['route']['binding'], evidence=row['evidence'], expected_token=token)
@@ -459,8 +461,10 @@ class Driver:
                     else:
                         sequence = event_episode(engine['episode'], token)
                         event = next((e for e in sequence['events'] if e['token'] == token), None) if sequence else None
-                        if event is None:
-                            raise ValueError('event changed at send boundary')
+                        task = next((t for t in self.coach.tasks() if t['id'] == row['task']['id']), None)
+                        from .coaching import eligible
+                        if event is None or not same_snapshot(row['task'], task) or not same_cycle(sequence, task) or not eligible(task, now, self.coach.config()['timezone']):
+                            raise ValueError('task or event changed at send boundary')
                         if self.missed_during_clarification(state, row['route']['binding'], event):
                             raise ValueError('clarification-missed-opportunity')
                 result = subprocess.run([hermes, 'send', '--json', '--to', row['route']['destination'], '--', row['body']],
@@ -565,6 +569,7 @@ class Driver:
                 if fallback and not any(r['token'] == fallback['token'] for r in rows):
                     rows.append(fallback)
                 tasks = {t['id']: t for t in self.coach.tasks()}
+                rows = [r for r in rows if clarification.retry_row(r) or same_cycle(r['task'], tasks.get(r['task']['id']))]
                 records = runtime.get('clarifications', {})
                 already_held = any(c['state'] not in clarification.TERMINAL for c in records.values())
                 targets, ambiguous = [], False
@@ -611,7 +616,7 @@ class Driver:
                         targets.append(None)
                         continue
                     candidates = [dict(r, task=tasks[r['task']['id']]) for r in rows
-                                  if not clarification.retry_row(r) and r['task']['id'] in tasks and eligible(tasks[r['task']['id']], instant(message['timestamp']))
+                                  if not clarification.retry_row(r) and r['task']['id'] in tasks and same_cycle(r['task'], tasks[r['task']['id']]) and eligible(tasks[r['task']['id']], instant(message['timestamp']), self.coach.config()['timezone'])
                                   and int(r['receipt']['message_id']) < int(message['id'])
                                   and instant(r['receipt']['delivered_at']) <= instant(message['timestamp'])]
                     if reference is None:
@@ -662,13 +667,16 @@ class Driver:
                 if record['selected_token'] != candidate['token'] or record['selection']['id'] != selection_message_id:
                     raise ValueError('conflicting clarification resolution')
                 if record['state'] == 'resolved':
+                    task = next((t for t in self.coach.tasks() if t['id'] == task_id), None)
+                    if not same_cycle(candidate['task'], task):
+                        raise ValueError('resolved clarification belongs to an older task cycle')
                     return record['result']
                 if now < instant(record['resolved_at']):
                     raise ValueError('clock regressed during clarification resolution')
                 with self.coach._transaction() as state:
                     sequence = event_episode(state['episode'], candidate['token'])
                     task = next((t for t in self.coach.tasks() if t['id'] == task_id), None)
-                    if task != candidate['task'] or not eligible(task, now):
+                    if not same_snapshot(candidate['task'], task) or not eligible(task, now, self.coach.config()['timezone']):
                         raise ValueError('candidate is no longer valid; preserve the hold')
                     if sequence and sequence['binding'] == binding:
                         sequence['stopped'] = sequence['stopped'] or 'owner-engaged'
@@ -698,11 +706,11 @@ class Driver:
             with self.coach._transaction() as state:
                 sequence = event_episode(state['episode'], candidate['token'])
                 task = next((t for t in self.coach.tasks() if t['id'] == task_id), None)
-                if task != candidate['task'] or not eligible(task, now):
+                if not same_snapshot(candidate['task'], task) or not eligible(task, now, self.coach.config()['timezone']):
                     raise ValueError('candidate is no longer valid; preserve the hold')
                 # Validate before persisting the write-ahead explicit choice.
                 # No engagement until that choice has committed in the outbox.
-                context = dict(task=task, task_id=task_id, event_token=candidate['token'],
+                context = dict(task=candidate['task'], task_id=task_id, event_token=candidate['token'],
                                receipt=candidate['receipt'], binding=binding)
                 result = dict(engaged=True, context=context, provenance='explicit-owner-selection',
                               clarification_id=clarification_id, original_message_id=original['id'],
@@ -838,7 +846,7 @@ class Driver:
             tasks = {t['id']: t for t in self.coach.tasks()}
             runtime = self.status()
             rows = [r for r in rows if clarification.current_receipt(runtime, r) and r['task']['id'] in tasks
-                    and eligible(tasks[r['task']['id']], datetime.now(UTC))]
+                    and same_cycle(r['task'], tasks[r['task']['id']]) and eligible(tasks[r['task']['id']], datetime.now(UTC), self.coach.config()['timezone'])]
             if len({row['task']['id'] for row in rows}) > 1:
                 return None
         if not rows:
@@ -846,10 +854,14 @@ class Driver:
         row = max(rows, key=lambda r: (instant(r['receipt']['delivered_at']), int(r['receipt']['message_id'])))
         if clarification.retry_row(row):
             records = self.status().get('clarifications', {})
+            if not clarification.current_cycles(self, [records[key] for key in row['intent']['clarification_ids']]):
+                return None
             return dict(kind='clarification', clarification_ids=row['intent']['clarification_ids'],
                         clarifications=[records[key] for key in row['intent']['clarification_ids']],
                         receipt=row['receipt'], event_token=row['token'], binding=binding)
         task = next((task for task in self.coach.tasks() if task['id'] == row['task']['id']), None)
+        if not same_cycle(row['task'], task):
+            return None
         return dict(task=task, task_id=row['task']['id'], event_token=row['token'], receipt=row['receipt'], binding=binding)
 
 

@@ -28,7 +28,12 @@ def instant(value):
         raise ValueError('timestamp is outside the representable UTC range') from None
 
 
-def eligible(task, now):
+def eligible(task, now, zone='UTC'):
+    if task.get('repeat_interval'):
+        due = task['due']
+        due = datetime.combine(datetime.fromisoformat(due).date(), time(), ZoneInfo(zone)) if len(due) == 10 else instant(due)
+        if instant(due) > instant(now):
+            return False
     return task['status'] == 'open' and (not task['snoozed_until'] or instant(task['snoozed_until']) <= now)
 
 
@@ -44,7 +49,7 @@ def task_weight(task, now, zone):
 
 
 def choose_task(tasks, now, zone, rng, recent=()):
-    tasks = [task for task in tasks if eligible(task, now)]
+    tasks = [task for task in tasks if eligible(task, now, zone)]
     alternatives = [task for task in tasks if task['id'] not in recent]
     tasks = alternatives or tasks
     if not tasks:
@@ -129,7 +134,7 @@ def validate_state(state):
         if episode is None:
             return
         if isinstance(episode, dict) and 'next_tasks' in episode:
-            if set(episode) != {'day', 'task_id', 'binding', 'config', 'events', 'stopped', 'next_tasks', 'window_stopped'}:
+            if set(episode) != ({'day', 'task_id', 'binding', 'config', 'events', 'stopped', 'next_tasks', 'window_stopped'} | ({'cycle_id'} if 'cycle_id' in episode else set())):
                 raise ValueError('invalid coaching state')
             if not isinstance(episode['next_tasks'], list) or not episode['next_tasks']:
                 raise ValueError('invalid coaching state')
@@ -143,7 +148,7 @@ def validate_state(state):
             previous = None
             consumed = 0
             for item in items:
-                if not isinstance(item, dict) or set(item) != {'day', 'task_id', 'binding', 'config', 'events', 'stopped'}:
+                if not isinstance(item, dict) or set(item) != ({'day', 'task_id', 'binding', 'config', 'events', 'stopped'} | ({'cycle_id'} if 'cycle_id' in item else set())):
                     raise ValueError('invalid coaching state')
                 validate_state(dict(state, episode=item))
                 if any(item[k] != episode[k] for k in ('day', 'config', 'binding')) or not item['events'] or item['task_id'] in tasks:
@@ -166,8 +171,10 @@ def validate_state(state):
                 raise ValueError('invalid coaching state')
             return
         required = {'day', 'task_id', 'binding', 'config', 'events', 'stopped'}
-        if not (isinstance(episode, dict) and required <= set(episode) <= required | {'purpose'}):
+        if not (isinstance(episode, dict) and required <= set(episode) <= required | {'purpose', 'cycle_id'}):
             raise ValueError('invalid coaching state')
+        if episode.get('cycle_id') is not None and (not isinstance(episode['cycle_id'], str) or len(episode['cycle_id']) != 32 or any(c not in '0123456789abcdef' for c in episode['cycle_id'])):
+            raise ValueError('invalid coaching cycle')
         if 'purpose' in episode and (episode['purpose'] != 'one-check-in-test' or len(episode['events']) != 1):
             raise ValueError('invalid coaching state')
         if not (datetime.fromisoformat(episode['day']).date().isoformat() == episode['day']):
@@ -302,7 +309,7 @@ class Coach:
                     # SQLite has no CHECK-constraint introspection. Accept only
                     # our versioned DDL (ignoring whitespace/case), not a table
                     # that merely happens to contain a plausible first row.
-                    schema = db.execute("SELECT type, name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").fetchall()
+                    schema = db.execute("SELECT type, name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").fetchall()
                     if len(schema) != 1 or schema[0][:2] != ('table', 'state') or ''.join(schema[0][2].split()).lower() != ''.join(STATE_SCHEMA.split()).lower():
                         raise ValueError('incompatible coaching state schema')
                     columns = db.execute('PRAGMA table_xinfo(state)').fetchall()
@@ -382,6 +389,10 @@ class Coach:
             episode = event_episode(state['episode'], event_token)
             if not episode or episode['binding'] != binding:
                 raise ValueError('engagement does not match current event and owner binding')
+            from .recurrence import same_cycle
+            task = next((t for t in self.tasks() if t['id'] == episode['task_id']), None)
+            if not same_cycle(episode, task):
+                raise ValueError('stale engagement cycle')
             episode['stopped'] = episode['stopped'] or 'owner-engaged'
             return dict(stopped=episode['stopped'])
 
@@ -389,7 +400,7 @@ class Coach:
         minutes = window_minutes(day, config)
         if future_only:
             minutes = [minute for minute in minutes if minute > now]
-        tasks = [t for t in self.tasks() if eligible(t, now)]
+        tasks = [t for t in self.tasks() if eligible(t, now, config['timezone'])]
         gap = max(30, config['min_followup_interval'])
         count = min(config['max_tasks_per_window'], len(tasks), len(minutes) // (10 + gap))
         if count > 1:
@@ -411,7 +422,7 @@ class Coach:
                     if not candidates:
                         break
                     slot = self.rng.choice(candidates)
-                result.append(dict(day=day, task_id=task['id'], binding=binding, config=config, events=events, stopped=None))
+                result.append(dict(day=day, task_id=task['id'], cycle_id=task.get('cycle_id'), binding=binding, config=config, events=events, stopped=None))
             first = result[0]
             if len(result) > 1:
                 first.update(next_tasks=result[1:], window_stopped=None)
@@ -426,7 +437,7 @@ class Coach:
                 if not candidates:
                     break
                 slot = self.rng.choice(candidates)
-        return dict(day=day, task_id=task['id'] if task else None, binding=binding, config=config, events=events, stopped=None)
+        return dict(day=day, task_id=task['id'] if task else None, cycle_id=task.get('cycle_id') if task else None, binding=binding, config=config, events=events, stopped=None)
 
     def prepare(self, *, now=None, binding=None):
         """Inspect due work without consuming history or claiming the event."""
@@ -486,7 +497,8 @@ class Coach:
 
     def _tick_sequence(self, episode, state, now, binding, config, evidence, expected_token, prepare_only):
         task = next((t for t in self.tasks() if t['id'] == episode['task_id']), None)
-        if not task or not eligible(task, now):
+        from .recurrence import same_cycle
+        if not task or not same_cycle(episode, task) or not eligible(task, now, config['timezone']):
             episode['stopped'] = episode['stopped'] or 'task-unavailable'
         if episode['stopped']:
             return dict(wakeAgent=False, reason=episode['stopped'])

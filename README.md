@@ -5,6 +5,59 @@ choose a small next step, and work through blockers in an ordinary conversation.
 No messaging account is needed. Optional automatic check-ins currently support
 **already-configured Discord connections only**.
 
+## Completion-based recurring tasks (0.1.0rc4)
+
+Say “replace the filter every three months.” Hermes asks when it was last actually
+completed or when it should first become due, confirms relative answers such as
+“last Saturday” as a concrete local date, and asks if the date is uncertain.
+Only explicit completion advances this task: ordinary replies, dismissals and
+snoozes do not. The same row stays overdue indefinitely until completed; no missed
+occurrences or backlog are generated. Completion clears snooze, leaves the task
+open and computes the next due from actual completion (three calendar months,
+not 90 days). Due restores randomized check-in eligibility, not an exact-date send.
+The existing shared distinct-task/follow-up notification budget is unchanged.
+
+The bundled JSON CLI supports:
+
+```sh
+python3 "<skill_dir>/scripts/task-coach.py" add "Replace filter" --repeat "3 months" --due 2024-01-31
+python3 "<skill_dir>/scripts/task-coach.py" show ID
+python3 "<skill_dir>/scripts/task-coach.py" done ID --completed-at 2024-01-31 --expected-cycle CAPTURED_CYCLE --completion-id UNIQUE_REQUEST_ID
+python3 "<skill_dir>/scripts/task-coach.py" update ID --repeat "2 weeks"
+python3 "<skill_dir>/scripts/task-coach.py" update ID --remove-repeat
+```
+
+Replace placeholders with the returned ID and `cycle_id`. Capture a cycle and one
+unique completion request ID **before** completion and reuse the same values and
+actual date on retry; never fetch a new cycle to replay an old request. Concurrent
+requests cannot advance the same cycle twice. The latest identical request is a
+no-op after restart; older/conflicting cycles refuse. Plain `done ID` is unchanged
+for ordinary tasks, but refuses for recurring tasks. Status edits cannot bypass
+the recurring completion guard. Recurrence edits/removal preserve unrelated fields,
+current due/status and snooze; removal does not complete or cancel the task.
+
+Intervals are positive day/week/month counts (1..9999), with an explicit initial
+due date/timestamp. A supplied last-completion date is used to derive and confirm
+that first due before adding, not recorded as a fake new completion. Date-only due
+values gate eligibility by date in the configured IANA timezone; timestamps gate
+by instant. Arithmetic uses local calendar days/weeks/months, clamping month ends
+(January 31 + three months = April 30; leap years respected). Timestamp completions
+preserve local wall time with the target date's offset; DST gaps roll forward by
+the gap and folds choose the first occurrence. Date-only completion stays date-only.
+Naive timestamps, malformed and future completion values refuse.
+
+Existing unversioned task stores are readable without migration. Before enabling
+recurrence, obtain approval, stop old-version writers, and explicitly run
+`python3 "<skill_dir>/scripts/task-coach.py" migrate` in the approved data scope.
+The exact repository legacy nine-column task schema (`user_version=0`) upgrades
+transactionally to version 1 by appending nullable interval/cycle/last-request
+fields. IDs, contents, configuration and separate engine/runtime/receipt/audit
+stores are preserved. Reads never migrate; malformed data, incompatible DDL or
+unknown versions refuse without resetting state. Fresh stores use version 1.
+Use only the new helper after migration. See the
+[skill's recurrence protocol](skills/task-coach/SKILL.md#completion-based-recurring-tasks)
+for full retry, snapshot and stale clarification behavior.
+
 ## Install
 
 Requires Python 3.11+ with SQLite and timezone data. Linux is the qualified platform;

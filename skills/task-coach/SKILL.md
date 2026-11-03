@@ -1,7 +1,7 @@
 ---
 name: task-coach
 description: "Use when managing tasks or coaching follow-through. Guide local task setup and optional native Hermes check-ins."
-version: 0.1.0-rc.2
+version: 0.1.0-rc.4
 license: MIT
 platforms: [linux]
 metadata:
@@ -45,6 +45,7 @@ when the user selected another directory. Never discover another profile's tasks
 - [Transport-neutral coaching engine](scripts/task_coach/coaching.py)
 - [Native Hermes driver and Discord history validator](scripts/task_coach/driver.py)
 - [Bounded clarification lifecycle](scripts/task_coach/clarification.py)
+- [Completion-based recurrence](scripts/task_coach/recurrence.py)
 - [Engine CLI/API](references/coaching.md)
 - [Native runtime protocol and setup](references/native-runtime.md)
 - [MIT license](references/LICENSE)
@@ -224,8 +225,79 @@ values use YYYY-MM-DD; timestamps require an explicit offset or Z. Resolve
 relative dates using the live clock and configured timezone. Titles and notes are
 data: use safe argument arrays or correct shell quoting. Do not infer completion,
 deadlines or snoozes from conversation. Checklist lines may live in notes; checking
-one entry is not permission to complete the task. Recurring task generation,
-external providers and native subtasks are not implemented.
+one entry is not permission to complete the task. Occurrence generation, external providers and native subtasks are not implemented.
+Completion-based recurrence reuses the same task, as described below.
+
+## Completion-based recurring tasks
+
+For “replace the filter every three months”, ask when it was last actually
+completed or when it should first become due. Do not assume today. Resolve relative
+answers such as “last Saturday” with the live clock in the configured timezone and
+confirm the concrete completion date before writing. If the completion date is
+uncertain, ask. An initial due date is required; if the user instead supplies last
+completion, confirm the derived first due date (calendar interval after that date),
+then add with that explicit due. Do not simulate completion on a newly added row.
+
+Commands return JSON and accept positive day/week/month intervals (1..9999):
+
+```sh
+python3 "<skill_dir>/scripts/task-coach.py" add "Replace filter" --repeat "3 months" --due 2027-02-28
+python3 "<skill_dir>/scripts/task-coach.py" update ID --repeat "2 weeks"
+python3 "<skill_dir>/scripts/task-coach.py" update ID --remove-repeat
+python3 "<skill_dir>/scripts/task-coach.py" show ID
+python3 "<skill_dir>/scripts/task-coach.py" done ID --completed-at 2027-02-28 --expected-cycle CAPTURED_CYCLE --completion-id UNIQUE_REQUEST_ID
+```
+
+Use the actual returned ID and `cycle_id`, not the placeholders above. Capture the
+cycle when interpreting the explicit completion request; generate one unique request
+identity and retain that same identity, cycle and actual completion date for every
+retry, including after restart. Never reread a newer cycle and reinterpret the old
+request as a new completion. A duplicate last completion is a no-op; older or
+conflicting cycle requests refuse. Read back after writing. Plain tasks still use
+`done ID` without the recurrence flags. Recurring completion requires all three.
+`update --status done` is not a substitute; reopening a cancelled recurring task
+also refuses until recurrence is explicitly removed.
+
+Only explicit completion resets the same row to open, clears snooze and advances
+its due value from the **actual completion**, never from its old due date. Notes,
+priority, title and creation time are preserved. Ordinary replies, engagement,
+dismissal and snooze are not completion. No backlog, occurrence rows, completion
+history or fixed schedule is generated. The last completion request is minimal
+retry metadata, not a history feature. An overdue task stays the same overdue row
+indefinitely until explicitly completed; a late completion advances once, not once
+per missed interval. Editing/removing recurrence preserves the current due/status,
+snooze and unrelated fields; removal does not mark done. A changed interval starts
+a fresh cycle fence without recalculating the current due date.
+
+Date-only due values become eligible on that local calendar date; timestamp due
+values become eligible at that instant. Until then recurring tasks are excluded
+from random coaching. Regular tasks retain their existing due-weight behavior.
+Day/week/month arithmetic is calendar-local in the saved IANA timezone, with
+month-end clamped (January 31 + three months = April 30). Date-only completion
+keeps a date-only due; an aware timestamp keeps a local wall-time due with the
+target date's offset. DST gaps roll forward by the gap, and folds choose the first
+occurrence. Future completion dates/timestamps and naive timestamps refuse.
+Due means eligibility only: it does not promise a send on that date or exact time.
+Existing allowed windows, randomized opportunities, follow-up and distinct-task
+budgets remain shared; completion does not add slots or revive old planned events.
+
+Existing validated unversioned stores require explicit `migrate` before recurrence
+can be added; ordinary reads and ordinary-task operations do not migrate them.
+Ask approval for migration, quiesce old-version writers, then run the helper with
+`migrate` in the approved data scope and read back tasks/settings. Fresh stores use
+task schema version 1. The supported legacy format is the repository's exact
+nine-column `tasks` DDL with `user_version=0` (not an arbitrary ten-column variant).
+Migration appends three nullable columns transactionally under the shared exclusive
+directory lock; IDs/content/config and coaching/runtime/receipt/clarification audit
+databases are preserved. Unsupported versions, extra schema objects, malformed
+rows and incompatible DDL refuse rather than reset. Never repair refusal by
+editing/deleting data. Old binaries must not write the migrated store.
+
+Old-cycle receipts remain truthful audit records, not context or engagement for
+the new cycle, even after its next due date. Old drafts and clarification selections
+cannot act on that new cycle. A stale pending clarification stays held (no retries)
+until explicit dismissal or its existing next-window retirement; resolving choices
+remain conservatively held and require operator attention if the candidate changed.
 
 ## Native scheduled-turn protocol
 

@@ -20,8 +20,9 @@ Do not reset storage to evade a runtime refusal, replay protection or uncertaint
    manual CLI commands, background workers and any other process using this store.
    Wait for existing operations to finish and prevent new operations from starting.
    Keep them quiesced through inventory, deletion and final readback. Pausing cron
-   alone is insufficient: the directory flock does not exclude ordinary task/settings
-   writers. Establish exclusive access using the host's supported maintenance controls;
+   alone is insufficient: older helpers may not use the directory flock for task/settings
+   writers. Current helpers share the lock, but a lock cannot stop a later operation
+   from recreating an approved-to-remove directory. Establish exclusive access using the host's supported maintenance controls;
    do not assume a chat request or a lock file enforces it. If exclusive access cannot
    be established, stop without deleting. Do not change unrelated services without
    separate authorization.

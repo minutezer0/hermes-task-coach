@@ -49,7 +49,11 @@ class WheelArtifactTest(unittest.TestCase):
             self.assertFalse((root / "fictional profile").exists())
             config = json.loads(run(command + ["setup", "--timezone", "UTC"], env=env).stdout)["config"]
             self.assertFalse(config["automation_enabled"])
-            task = json.loads(run(command + ["add", "Fictional wheel task"], env=env).stdout)
+            task = json.loads(run(command + ["add", "Fictional wheel task", "--repeat", "3 months", "--due", "2024-01-31"], env=env).stdout)
+            flags = ['done', str(task['id']), '--completed-at', '2024-01-31', '--expected-cycle', task['cycle_id'], '--completion-id', 'wheel-request']
+            task = json.loads(run(command + flags, env=env).stdout)
+            self.assertEqual(task['due'], '2024-04-30')
+            self.assertEqual(json.loads(run(command + flags, env=env).stdout), task)
             self.assertEqual(json.loads(run(command + ["show", str(task["id"])], env=env).stdout), task)
             skill = venv / "share" / "task-coach" / "skill"
             # Neither the build tree nor the installed Python package is available to the system interpreter.
