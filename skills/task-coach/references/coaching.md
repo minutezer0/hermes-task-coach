@@ -1,5 +1,26 @@
 # Transport-neutral coaching engine
 
+## Completion-based recurrence
+
+`add --repeat "3 months" --due DATE_OR_TIMESTAMP`, `update ID --repeat "2 weeks"`
+and `update ID --remove-repeat` operate on the same task row. Completion is
+`done ID --completed-at ACTUAL_DATE_OR_AWARE_TIMESTAMP --expected-cycle CAPTURED_CYCLE
+--completion-id UNIQUE_REQUEST_ID`. Preserve all three request values on retry.
+Only explicit completion resets eligibility, clears snooze and rotates cycle.
+No ordinary reply, dismissal or snooze completes a task. Ask when actual completion
+is uncertain; confirm a relative date before writing. No occurrence history,
+backlog or exact-date alert is generated. Calendar months clamp month-end; calendar
+days/weeks and timestamp arithmetic use the configured timezone, DST gaps roll
+forward and folds choose the first occurrence. Initial due is explicit and gates
+recurring selection; overdue tasks persist unchanged until completion.
+
+Recurring tasks use the existing shared budgets, not extra slots. Stored plans
+capture `cycle_id`; a completed/edited cycle makes its old plan unavailable even
+when the new cycle is overdue. Completion does not replan the current window.
+Historical plain plans without a cycle remain compatible. See SKILL.md for the
+explicit version-0-to-1 `migrate` path; reads never migrate or reset stores.
+
+
 For native unattended integration use the [runtime protocol](native-runtime.md),
 not hand-written evidence or receipts. This reference describes the low-level
 engine API, which remains usable without Discord or any messaging credentials.

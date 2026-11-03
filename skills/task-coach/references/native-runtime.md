@@ -1,5 +1,32 @@
 # Native Hermes runtime: optional Discord adapter
 
+## Recurring task cycle fences
+
+Completion-based tasks reuse IDs, so IDs alone are not snapshot identities.
+Engine plans and outbox task snapshots retain the cycle; context, owner engagement,
+observe/confirm attribution, clarification candidate resolution/retries, and the
+final directory-locked send boundary must match the current cycle. An old receipt
+may still be confirmed truthfully after completion, but cannot engage, complete or
+supply the new cycle as context, even after its due date. Confirming delivery never
+completes a task. An old draft cannot send for a newer cycle.
+
+Use the task CLI's guarded `done ID --completed-at ACTUAL_DATE_OR_AWARE_TIMESTAMP
+--expected-cycle CAPTURED_CYCLE --completion-id UNIQUE_REQUEST_ID` only on explicit
+completion. Capture the cycle and retain the same unique request ID/date for retries;
+never interpret a new cycle as authorization to replay an old completion. If the
+actual date is unclear, ask and confirm it. Ordinary replies, dismissals and snooze
+are not completion. Recurring due dates restore eligibility within existing random
+windows/budgets, not fixed-clock cron/date alerts or bonus notifications.
+
+Migration is explicit `migrate`, under the same exclusive directory lock as all
+new task/settings writers. It changes only the validated legacy task database, not
+engine/runtime receipts or clarification audit. Quiesce old binaries before upgrade.
+Old nonrecurring snapshots remain compatible when nullable fields are added.
+Stale pending clarification candidates suppress retries; explicit dismissal or the
+existing next-window retirement can release them without task changes. A resolving
+choice whose candidate changed remains fail-closed, not automatically rebound.
+
+
 No new bot account, SDK, dependency or importing Hermes into arbitrary Python.
 The model uses Hermes's supported `discord` tool for history. The helper launches
 native `hermes send` as an argument array, not a shell command. The core task and

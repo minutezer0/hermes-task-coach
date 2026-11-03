@@ -8,6 +8,7 @@ from pathlib import Path
 import os
 import sqlite3
 import sys
+import uuid
 import tempfile
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -60,11 +61,12 @@ def validate_config(config):
 
 
 @contextmanager
-def task_store_lock(directory):
+def task_store_lock(directory, *, repair=False):
     """Fence task snapshots and writes with the engine/runtime directory lock."""
     import fcntl
     from .coaching import safe_path
-    safe_path(directory, True)
+    if not repair:
+        safe_path(directory, True)
     fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -100,21 +102,56 @@ def title_value(value):
     return value
 
 
-TASK_COLUMNS = ("id", "title", "notes", "priority", "status", "due", "snoozed_until", "created_at", "updated_at")
+LEGACY_COLUMNS = ("id", "title", "notes", "priority", "status", "due", "snoozed_until", "created_at", "updated_at")
+
+
+TASK_COLUMNS = LEGACY_COLUMNS + ("repeat_interval", "cycle_id", "last_completion")
+LEGACY_DDL = "CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, notes TEXT NOT NULL, priority TEXT NOT NULL, status TEXT NOT NULL, due TEXT, snoozed_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+TASK_DDL = LEGACY_DDL[:-1] + ", repeat_interval TEXT, cycle_id TEXT, last_completion TEXT)"
 
 
 def validate_store(db):
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    schema = [tuple(row) for row in db.execute("SELECT type,name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'")]
+    ddl = TASK_DDL if version == 1 else LEGACY_DDL
+    if version not in (0, 1) or len(schema) != 1 or schema[0][:2] != ('table', 'tasks') or ''.join(schema[0][2].split()).lower() != ''.join(ddl.split()).lower():
+        raise ValueError("incompatible task store schema or version")
     columns = tuple(tuple(row)[1:] for row in db.execute("PRAGMA table_xinfo(tasks)"))
     expected = tuple(
         (name, "INTEGER" if name == "id" else "TEXT",
-         int(name not in ("id", "due", "snoozed_until")), None, int(name == "id"), 0)
-        for name in TASK_COLUMNS
+         int(name not in ("id", "due", "snoozed_until", "repeat_interval", "cycle_id", "last_completion")), None, int(name == "id"), 0)
+        for name in (TASK_COLUMNS if db.execute("PRAGMA user_version").fetchone()[0] == 1 else LEGACY_COLUMNS)
     )
     # A separate primary-key index means id is not the INTEGER rowid alias
     # (for example, INTEGER PRIMARY KEY DESC or a WITHOUT ROWID table).
     separate_pk = any(row[3] == "pk" for row in db.execute("PRAGMA index_list(tasks)"))
     if columns != expected or separate_pk:
         raise ValueError("incompatible task store schema")
+    names = TASK_COLUMNS if version == 1 else LEGACY_COLUMNS
+    from .recurrence import interval
+    try:
+        for row in db.execute("SELECT * FROM tasks"):
+            task = dict(zip(names, row))
+            if type(task['id']) is not int or task['id'] <= 0 or not isinstance(task['title'], str) or not task['title'].strip() or not isinstance(task['notes'], str) or task['priority'] not in ('low', 'normal', 'high') or task['status'] not in ('open', 'done', 'cancelled'):
+                raise ValueError('invalid task data')
+            for field in ('due', 'snoozed_until', 'created_at', 'updated_at'):
+                value = task[field]
+                if value is not None:
+                    due_value(value, aware_only=field != 'due')
+            if version == 1:
+                cycle = task['cycle_id']
+                if cycle is not None and (not isinstance(cycle, str) or not re.fullmatch('[0-9a-f]{32}', cycle)):
+                    raise ValueError('invalid cycle')
+                if task['repeat_interval'] is not None:
+                    if interval(task['repeat_interval']) != task['repeat_interval'] or cycle is None or task['due'] is None or task['status'] == 'done':
+                        raise ValueError('invalid recurrence')
+                if task['last_completion'] is not None:
+                    record = json.loads(task['last_completion'])
+                    if set(record) != {'cycle', 'identity', 'completed_at'} or not re.fullmatch('[0-9a-f]{32}', record['cycle']) or not isinstance(record['identity'], str) or not record['identity'].strip() or cycle is None or record['cycle'] == cycle:
+                        raise ValueError('invalid completion')
+                    due_value(record['completed_at'])
+    except (TypeError, KeyError, argparse.ArgumentTypeError, OverflowError):
+        raise ValueError('invalid task data') from None
 
 
 def get_task(db, key):
@@ -151,6 +188,7 @@ def run(argv=None):
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("init")
+    commands.add_parser("migrate", help="Explicitly migrate a validated legacy task store; reads never migrate")
     setup = commands.add_parser(
         "setup",
         description="Configure local task coaching. No jobs or delivery are enabled.",
@@ -194,6 +232,7 @@ def run(argv=None):
     add.add_argument("--notes", default="")
     add.add_argument("--priority", choices=("low", "normal", "high"), default="normal")
     add.add_argument("--due", type=due_value)
+    add.add_argument("--repeat")
     show = commands.add_parser("show")
     show.add_argument("id", type=int)
     search = commands.add_parser("search")
@@ -204,8 +243,14 @@ def run(argv=None):
         update.add_argument("--" + field, type=title_value if field == "title" else due_value if field == "due" else str)
     update.add_argument("--priority", choices=("low", "normal", "high"))
     update.add_argument("--status", choices=("open", "done", "cancelled"))
+    group = update.add_mutually_exclusive_group()
+    group.add_argument("--repeat")
+    group.add_argument("--remove-repeat", action="store_true")
     done = commands.add_parser("done")
     done.add_argument("id", type=int)
+    done.add_argument("--completed-at", type=due_value)
+    done.add_argument("--expected-cycle")
+    done.add_argument("--completion-id")
     snooze = commands.add_parser("snooze")
     snooze.add_argument("id", type=int)
     snooze.add_argument("until", type=lambda value: due_value(value, aware_only=True))
@@ -283,27 +328,47 @@ def run(argv=None):
         config.update(changes)
         validate_config(config)
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if not store.exists():
-            fd = os.open(store, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.close(fd)
-        with closing(sqlite3.connect(store)) as db:
-            db.execute("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, notes TEXT NOT NULL, priority TEXT NOT NULL, status TEXT NOT NULL, due TEXT, snoozed_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
-            validate_store(db)
-            db.commit()
-        directory.chmod(0o700)
-        store.chmod(0o600)
-        if not existing or changes:
-            fd, temporary = tempfile.mkstemp(prefix=".config-", dir=directory)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as file:
-                    json.dump(config, file, indent=2)
-                    file.write("\n")
-                os.replace(temporary, config_path)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
-        config_path.chmod(0o600)
+        # Ownership/type/symlink checks above permit setup's dedicated-mode repair.
+        with task_store_lock(directory, repair=True):
+            fresh = not store.exists()
+            if fresh:
+                fd = os.open(store, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.close(fd)
+            with closing(sqlite3.connect(store)) as db:
+                if fresh:
+                    db.execute(TASK_DDL)
+                    db.execute("PRAGMA user_version=1")
+                validate_store(db)
+                db.commit()
+            directory.chmod(0o700)
+            store.chmod(0o600)
+            if not existing or changes:
+                fd, temporary = tempfile.mkstemp(prefix=".config-", dir=directory)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as file:
+                        json.dump(config, file, indent=2)
+                        file.write("\n")
+                    os.replace(temporary, config_path)
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+            config_path.chmod(0o600)
         result = {"config": config}
+    elif args.command == 'migrate':
+        with task_store_lock(directory), closing(sqlite3.connect(store.resolve().as_uri() + "?mode=rw", uri=True)) as db:
+            validate_store(db)
+            if db.execute("PRAGMA user_version").fetchone()[0] == 0:
+                db.execute('BEGIN IMMEDIATE')
+                try:
+                    for field in ('repeat_interval', 'cycle_id', 'last_completion'):
+                        db.execute('ALTER TABLE tasks ADD COLUMN ' + field + ' TEXT')
+                    db.execute('PRAGMA user_version=1')
+                    validate_store(db)
+                    db.commit()
+                except BaseException:
+                    db.rollback()
+                    raise
+            result = dict(version=1)
     elif args.command == 'runtime':
         from .driver import run_cli
         result = run_cli(directory, args)
@@ -327,18 +392,43 @@ def run(argv=None):
             result = engine.stop(args.event_token, args.binding)
     else:
         with task_store_lock(directory), closing(sqlite3.connect(store.resolve().as_uri() + "?mode=rw", uri=True)) as db:
+            config = validate_config(json.loads(config_path.read_text(encoding="utf-8")))
             db.row_factory = sqlite3.Row
             validate_store(db)
             if args.command == "add":
+                from .recurrence import interval
+                repeat = interval(args.repeat) if args.repeat else None
+                if repeat and not args.due:
+                    raise ValueError("recurrence requires an explicit initial due date")
+                if repeat and db.execute("PRAGMA user_version").fetchone()[0] != 1:
+                    raise ValueError("run migrate before adding recurrence")
                 now = datetime.now(timezone.utc).isoformat()
                 cursor = db.execute("INSERT INTO tasks (title, notes, priority, status, due, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (args.title, args.notes, args.priority, "open", args.due, now, now))
+                if repeat:
+                    db.execute("UPDATE tasks SET repeat_interval=?, cycle_id=? WHERE id=?", (repeat, uuid.uuid4().hex, cursor.lastrowid))
                 db.commit()
                 result = dict(db.execute("SELECT * FROM tasks WHERE id = ?", (cursor.lastrowid,)).fetchone())
             elif args.command in ("update", "done", "snooze"):
                 task = get_task(db, args.id)
                 changes = {}
+                if args.command == 'done' and not task.get('repeat_interval') and any((args.completed_at, args.expected_cycle, args.completion_id)):
+                    raise ValueError('guarded completion does not match a recurring task')
                 if args.command == "update":
                     changes = {field: getattr(args, field) for field in ("title", "notes", "due", "priority", "status") if getattr(args, field) is not None}
+                    if task.get("repeat_interval") and args.status in ("open", "done") and args.status != task["status"]:
+                        raise ValueError("use guarded done for recurring completion; status cannot bypass it")
+                    if args.repeat or args.remove_repeat:
+                        from .recurrence import interval
+                        if db.execute("PRAGMA user_version").fetchone()[0] != 1:
+                            raise ValueError("run migrate before editing recurrence")
+                        repeat = interval(args.repeat) if args.repeat else None
+                        if repeat and (changes.get("status", task["status"]) != "open" or not changes.get("due", task["due"])):
+                            raise ValueError("recurrence requires an open task with an explicit due date")
+                        if repeat != task.get("repeat_interval"):
+                            changes.update(repeat_interval=repeat, cycle_id=uuid.uuid4().hex)
+                elif args.command == "done" and task.get("repeat_interval"):
+                    from .recurrence import completion_changes
+                    changes = completion_changes(task, args.completed_at, args.expected_cycle, args.completion_id, config["timezone"], datetime.now(timezone.utc))
                 elif args.command == "done" and task["status"] != "done":
                     changes = {"status": "done"}
                 elif args.command == "snooze":

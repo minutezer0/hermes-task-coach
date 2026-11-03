@@ -28,6 +28,7 @@ class SkillBundleTest(unittest.TestCase):
                    "skills/task-coach/scripts/task_coach/__main__.py", "skills/task-coach/scripts/task_coach/cli.py",
                    "tests/test_core_installed_skill.py", "tests/test_core_wheel.py",
                    "skills/task-coach/scripts/task_coach/clarification.py",
+                   "skills/task-coach/scripts/task_coach/recurrence.py",
                    "tests/test_core_clarification_retry.py"]
         blocked = ["skills/task-coach/scripts/task-coach", "skills/task-coach/scripts/helper.so",
                    "skills/task-coach/scripts/task_coach/cli.pyc", "skills/task-coach/scripts/task_coach/tasks.sqlite3",
@@ -60,7 +61,7 @@ class SkillBundleTest(unittest.TestCase):
         self.assertIn("Keep them quiesced through inventory, deletion and final readback", text)
         self.assertIn("If exclusive access cannot be established, stop without deleting", text)
         self.assertLess(text.index("Quiesce all Task Coach writers"), text.index("Inventory the approved data directory"))
-        self.assertIn("directory flock does not exclude ordinary task/settings writers", text)
+        self.assertIn("older helpers may not use the directory flock for task/settings writers", text)
 
     def test_packaging_includes_every_linked_reference(self):
         root = Path(__file__).resolve().parents[1]
@@ -89,6 +90,7 @@ class SkillBundleTest(unittest.TestCase):
                 "skills/task-coach/scripts/task_coach/coaching.py",
                 "skills/task-coach/scripts/task_coach/driver.py",
                 "skills/task-coach/scripts/task_coach/clarification.py",
+                "skills/task-coach/scripts/task_coach/recurrence.py",
             ],
         }
         self.assertEqual(files, expected)

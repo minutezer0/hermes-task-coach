@@ -75,6 +75,13 @@ def retry_row(row):
     return row['intent'].get('kind') == 'clarification'
 
 
+def current_cycles(driver, records):
+    from .recurrence import same_cycle
+    tasks = {task['id']: task for task in driver.coach.tasks()}
+    return all(same_cycle(candidate['task'], tasks.get(candidate['task']['id']))
+               for record in records for candidate in record['candidates'])
+
+
 def spacing_ok(runtime, cycle, now):
     receipts = [instant(row['receipt']['delivered_at']) for row in runtime['outbox'].values()
                 if retry_row(row) and row['state'] == 'confirmed'
@@ -141,7 +148,7 @@ def prepare(driver, runtime, engine, now):
         for record in held:
             record.update(state='retired', resolved_at=now.isoformat())
         return None
-    if cycle['blocked']:
+    if cycle['blocked'] or not current_cycles(driver, held):
         return quiet
     for event in cycle['events']:
         if event['state'] != 'planned':
@@ -174,6 +181,7 @@ def authorize(driver, runtime, engine, row, now):
             or runtime['route'] != row['route']
             or sorted(c['id'] for c in pending(runtime)) != row['intent']['clarification_ids']
             or not all(c['state'] == 'pending' for c in pending(runtime))
+            or not current_cycles(driver, pending(runtime))
             or unresolved_engine(engine)
             or engine['paused'] or not engine['episode'] or engine['episode'].get('window_stopped')
             or any(s['stopped'] not in SAFE_STOPS for s in sequences(engine['episode']))

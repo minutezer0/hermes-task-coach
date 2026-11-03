@@ -42,6 +42,16 @@ class InstalledSkillTest(unittest.TestCase):
     def cli(self, *args, **kwargs):
         return json.loads(self.invoke(*args, **kwargs).stdout)
 
+    def test_copied_skill_recurrence_completion_retry(self):
+        self.cli('setup', '--timezone', 'America/Los_Angeles')
+        task = self.cli('add', 'Fictional filter', '--repeat', '3 months', '--due', '2024-01-31')
+        flags = ('done', str(task['id']), '--completed-at', '2024-01-31', '--expected-cycle', task['cycle_id'], '--completion-id', 'fictional-request')
+        result = self.cli(*flags)
+        self.assertEqual(result['due'], '2024-04-30')
+        self.assertEqual(result['status'], 'open')
+        self.assertEqual(self.cli(*flags), result)
+        self.assertEqual(self.cli('update', str(task['id']), '--remove-repeat')['due'], result['due'])
+
     def test_flag_setup_lifecycle_survives_reinstall_and_relocation(self):
         self.invoke("list", ok=False)
         self.assertFalse((self.root / "fake profile").exists())

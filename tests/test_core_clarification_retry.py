@@ -773,7 +773,7 @@ class RetryTest(ClarificationTest):
         runtime, history, drafts, now, pending = self.held()
         config = dict(runtime.coach.config(), timezone='America/New_York', weekdays=['sun'],
                       notification_start='01:00', notification_end='04:00')
-        driver = SimpleNamespace(coach=SimpleNamespace(config=lambda: config))
+        driver = SimpleNamespace(coach=SimpleNamespace(config=lambda: config, tasks=runtime.coach.tasks))
         for start, due, wall in (('2030-03-10T06:45:00Z', '2030-03-10T07:15:00Z', '03:15'),
                                  ('2030-11-03T05:45:00Z', '2030-11-03T06:15:00Z', '01:15')):
             with self.subTest(start=start):

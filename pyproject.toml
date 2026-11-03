@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "task-coach"
-version = "0.1.0rc3"
+version = "0.1.0rc4"
 description = "Explicit local task management for Hermes workflows"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,4 +29,5 @@ include = ["task_coach*"]
     "skills/task-coach/scripts/task_coach/coaching.py",
     "skills/task-coach/scripts/task_coach/driver.py",
     "skills/task-coach/scripts/task_coach/clarification.py",
+    "skills/task-coach/scripts/task_coach/recurrence.py",
 ]
