@@ -1,5 +1,58 @@
 # Transport-neutral coaching engine
 
+## Local-first proactive policy (0.1.0rc5)
+
+After route confirmation, explicitly opt in with `runtime upgrade-local-first
+--confirm-upgrade` in the approved data scope. This changes runtime policy, not
+task schema, installation, cron state or send authorization. Quiesce old writers
+before updating code; do not run older helpers after opting in. Code replacement,
+task `migrate`, runtime opt-in, artifact installation and live testing are separate
+approvals. Never use installation/update verification to send to a real route.
+
+Local task eligibility, recorded engagement, windows, spacing, budgets and global
+pause authorize **both openers and followups**. Native Hermes send remains the only
+transport. A positive `success:true` plus nonempty message ID persists `accepted`
+delivery with `native-send-response` provenance and advances ordinary work without
+history. This means transport acceptance, not independently verified arrival.
+Optional `confirm` validates real history and enriches the outbox as `confirmed`;
+its failure is a verification warning, not a failed send or a global scheduling lock.
+Failed/uncertain attempts remain nonretryable; their task sequence stops, while
+unrelated tasks and future days retain their own bounded opportunities. Report
+actual failed/uncertain sends with `[CRON_FAILURE]`, never silent success.
+
+The caller checks its native tool inventory/actual attempt and runs
+`runtime capabilities --history-availability unknown|unavailable|available`
+(with `--history-error TEXT` for failure). Core does not discover external tools:
+unknown means not checked, unavailable includes absent/error, and available means
+caller-reported availability, not delivery verification. Unknown/unavailable is
+visibly degraded and **nonblocking**. Do not wait for history or substitute a hosted
+connector when the native tool is absent. No source imports, raw credentials,
+alternate APIs or workarounds. Discord history remains an optional boundary
+adapter, never a scheduler dependency; no new platform is supported.
+
+For normal inbound, use exact trusted binding/owner/message ID and explicit task
+selection with `runtime record-engagement --binding JSON --owner OWNER
+--message-id INBOUND_ID --event-token EVENT --task-id TASK [--cycle-id CYCLE]
+--intent engaged|skip-for-now`. It needs no history: provenance is honest
+`agent-mediated-explicit-intent`, not an invented reply reference. Retry the exact
+identity/selection only. A recorded skip stops only that **current** sequence,
+without completion/snooze edits. Ambiguity requires a natural clarification before
+attribution or task edits, not a global check-in freeze. Existing immutable
+clarification audit/outcomes remain; resolving/resolved choices are never undone.
+New local-first ambiguity is handled conversationally, without creating automated
+clarification holds or retries.
+Unknown/unrecorded replies may receive bounded followups: this is an accepted
+tradeoff, not an impossible cross-session reply-suppression guarantee.
+
+Compatibility is explicit: existing episodes, IDs, outbox and clarification audits
+are retained, not reset/replayed. An existing episode keeps legacy policy for its
+whole local day; local-first begins on a later day. No current-day stopped episode
+or missed slot is revived. With no episode, opt-in applies immediately. Malformed
+or unknown data refuses, never silently migrates. Old attempts are never resent.
+Missed slots stop that task sequence; there is no catchup, backlog or budget
+expansion. Completion, cancellation, snooze, global pause, authorized route, current
+recurrence cycle and atomic write/send fences remain hard controls.
+
 ## Completion-based recurrence
 
 `add --repeat "3 months" --due DATE_OR_TIMESTAMP`, `update ID --repeat "2 weeks"`
@@ -25,6 +78,14 @@ For native unattended integration use the [runtime protocol](native-runtime.md),
 not hand-written evidence or receipts. This reference describes the low-level
 engine API, which remains usable without Discord or any messaging credentials.
 An engine intent is not a send or a positive receipt.
+
+## Low-level compatibility CLI
+
+The standalone `coach tick` API retains its legacy history-evidence contract.
+Unattended rc5 local-first work must use `runtime`, which sets local-first claim
+provenance instead of consuming fabricated evidence IDs. `deliveries` counts engine
+receipts for accepted as well as independently verified runtime outcomes; inspect
+outbox `acceptance` and `state` to distinguish provenance.
 
 ## CLI
 
