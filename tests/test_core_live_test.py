@@ -1,4 +1,5 @@
 """One-check-in preparation uses only fictional local stores and transport."""
+from test_core_history_fixtures import enable_history, history_request
 import unittest
 import test_core_restart as fixtures
 from task_coach.coaching import instant
@@ -64,6 +65,7 @@ class LiveTest(unittest.TestCase):
 
     def test_test_uses_normal_dispatch_readback_and_reply_stop(self):
         runtime = self.configured()
+        enable_history(runtime)
         episode = runtime.prepare_test(confirm=True, now=self.now)['episode']
         token = episode['events'][0]['token']
         with self.assertRaises(ValueError):
@@ -80,18 +82,18 @@ class LiveTest(unittest.TestCase):
         self.assertEqual(runtime.coach.status()['deliveries'], 1)
         self.assertEqual(row['acceptance']['provenance'], 'native-send-response')
         with self.assertRaises(ValueError):
-            runtime.confirm(token, draft['fence'], [], now=self.now)
+            runtime.confirm(token, draft['fence'], [], now=self.now, history_plan=history_request(runtime, 'confirm', token, draft['fence']))
         with self.assertRaises(ValueError):
             runtime.dispatch(token, draft['fence'], hermes=str(fake), now=self.now)
         binding = row['route']['binding']
         page = dict(binding=binding, channel_id='123', observed_at=self.now, before=None,
                     result=dict(messages=[dict(id='100', content='Synthetic test', timestamp=self.now, author=dict(id='456', bot=True), attachments=[])]))
-        receipt = runtime.confirm(token, draft['fence'], [page], now=self.now)
+        receipt = runtime.confirm(token, draft['fence'], [page], now=self.now, history_plan=history_request(runtime, 'confirm', token, draft['fence']))
         self.assertEqual(receipt['message_id'], '100')
         self.assertEqual(runtime.coach.status()['deliveries'], 1)
         self.assertFalse(runtime.preflight(now=self.now)['wakeAgent'])
         page['result']['messages'].insert(0, dict(id='101', content='Synthetic reply', timestamp=self.now, author=dict(id=binding['owner'], bot=False), attachments=[]))
-        self.assertTrue(runtime.engagement(binding, [page], now=self.now)['engaged'])
+        self.assertTrue(runtime.engagement(binding, [page], now=self.now, history_plan=history_request(runtime, 'engagement'))['engaged'])
         self.assertEqual(runtime.coach.status()['episode']['stopped'], 'owner-engaged')
         self.assertEqual(runtime.context(binding)['task']['title'], 'Synthetic task')
         self.assertEqual(self.cli('show', '1')['status'], 'open')

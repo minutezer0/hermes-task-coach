@@ -1,4 +1,5 @@
 """Vertical native-protocol tests; all stores and senders are synthetic."""
+from test_core_history_fixtures import enable_history, history_request, history_cli
 import copy
 from datetime import datetime, timedelta
 import json
@@ -16,7 +17,7 @@ class RetryTest(ClarificationTest):
     def held(self):
         runtime, history, drafts, now = self.fixture()
         history.insert(0, self.message('104', now, 'That one'))
-        pending = runtime.engagement(BINDING, self.pages(history, now), now=now)['clarifications'][0]
+        pending = runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))['clarifications'][0]
         return runtime, history, drafts, now, pending
 
     def at_cli(self, now, *args):
@@ -24,6 +25,8 @@ class RetryTest(ClarificationTest):
             @classmethod
             def now(cls, tz=None):
                 return instant(now).astimezone(tz)
+        if args[0] in ('confirm', 'observe', 'engagement', 'resolve-clarification', 'dismiss-clarification'):
+            args = history_cli(Driver(self.data), *args)
         with patch('task_coach.driver.datetime', Clock):
             return self.cli('runtime', *args)
 
@@ -44,11 +47,11 @@ class RetryTest(ClarificationTest):
         self.assertEqual(retired['candidates'], pending['candidates'])
         self.assertEqual(self.cli('list'), tasks)
         self.assertEqual(runtime.pending_clarifications(BINDING), [pending])
-        again = runtime.engagement(BINDING, self.pages(history, '2030-01-08T09:00:00Z'), now='2030-01-08T09:00:00Z')
+        again = runtime.engagement(BINDING, self.pages(history, '2030-01-08T09:00:00Z'), now='2030-01-08T09:00:00Z', history_plan=history_request(runtime, 'engagement'))
         self.assertFalse(again['engaged'])
         self.assertEqual(len(runtime.status()['clarifications']), 1)
         with self.assertRaises(ValueError):
-            runtime.resolve_clarification(binding=BINDING, clarification_id=pending['id'], task_id=drafts[0]['task']['id'], selection_message_id='105', pages=[], now='2030-01-08T09:00:00Z')
+            runtime.resolve_clarification(binding=BINDING, clarification_id=pending['id'], task_id=drafts[0]['task']['id'], selection_message_id='105', pages=[], now='2030-01-08T09:00:00Z', history_plan=history_request(runtime, 'resolve_clarification', selection_message_id='105'))
 
     def test_fresh_owner_reply_to_retry_routes_question_and_blocks_further_retry(self):
         self.test_retry_traverses_real_cli_draft_history_sender_and_receipt()
@@ -62,7 +65,7 @@ class RetryTest(ClarificationTest):
                    self.message('110', now, retry['body'], bot=True)]
         before = runtime.coach.status(), self.cli('list')
         result = runtime.engagement(BINDING, self.pages(history, now), now=now,
-                                    reply_to_message_id='110', inbound_message_id='111')
+                                    reply_to_message_id='110', inbound_message_id='111', history_plan=history_request(runtime, 'engagement', reply_to_message_id='110'))
         self.assertFalse(result['engaged'])
         self.assertEqual(result['error'], 'ambiguous-engagement')
         self.assertEqual(len(result['clarifications']), 1)
@@ -73,7 +76,7 @@ class RetryTest(ClarificationTest):
         self.assertFalse(Driver(self.data).preflight(now=later)['wakeAgent'])
         runtime.preflight(now='2030-01-08T09:00:00Z')
         self.assertEqual(runtime.status()['clarifications'][record['id']], record)
-        again = runtime.engagement(BINDING, self.pages(history, '2030-01-08T09:00:00Z'), now='2030-01-08T09:00:00Z')
+        again = runtime.engagement(BINDING, self.pages(history, '2030-01-08T09:00:00Z'), now='2030-01-08T09:00:00Z', history_plan=history_request(runtime, 'engagement'))
         self.assertFalse(again['engaged'])
         self.assertEqual(len(runtime.status()['clarifications']), 1)
 
@@ -81,7 +84,7 @@ class RetryTest(ClarificationTest):
         runtime, history, drafts, now, pending = self.held()
         runtime.preflight(now='2030-01-08T09:00:00Z')
         history.insert(0, self.message('120', '2030-01-08T09:01:00Z', 'Hello again'))
-        result = runtime.engagement(BINDING, self.pages(history, '2030-01-08T09:01:00Z'), now='2030-01-08T09:01:00Z')
+        result = runtime.engagement(BINDING, self.pages(history, '2030-01-08T09:01:00Z'), now='2030-01-08T09:01:00Z', history_plan=history_request(runtime, 'engagement'))
         self.assertEqual(len(runtime.status()['clarifications']), 1)
         self.assertFalse(result['engaged'])
         self.assertIsNone(runtime.context(BINDING))
@@ -113,13 +116,13 @@ class RetryTest(ClarificationTest):
     def test_multiple_legacy_holds_share_budget_and_preserve_remaining_after_rollover(self):
         runtime, history, drafts, now = self.fixture()
         history[:0] = [self.message('105', now, 'Other one'), self.message('104', now, 'That one')]
-        held = runtime.engagement(BINDING, self.pages(history, now), now=now)['clarifications']
+        held = runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))['clarifications']
         self.assertEqual(len(held), 2)
         due = (instant(now) + timedelta(minutes=30)).isoformat()
         offered = runtime.preflight(now=due)
         self.assertEqual(set(offered['intent']['clarification_ids']), {c['id'] for c in held})
         history.insert(0, self.message('106', due, 'Dismiss the first question'))
-        runtime.dismiss_clarification(binding=BINDING, clarification_id=held[0]['id'], dismissal_message_id='106', pages=self.pages(history, due), now=due)
+        runtime.dismiss_clarification(binding=BINDING, clarification_id=held[0]['id'], dismissal_message_id='106', pages=self.pages(history, due), now=due, history_plan=history_request(runtime, 'dismiss_clarification', dismissal_message_id='106'))
         runtime.preflight(now='2030-01-08T09:00:00Z')
         states = {c['state'] for c in runtime.status()['clarifications'].values()}
         self.assertEqual(states, {'dismissed', 'pending'})  # New-day adoption preserves legacy audit.
@@ -154,7 +157,7 @@ class RetryTest(ClarificationTest):
         runtime, history, drafts, due, pending, draft = self.retry_draft()
         history[1]['author']['id'] = 'wrong-bot'
         with self.assertRaisesRegex(ValueError, 'candidate'):
-            runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+            runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         self.assertIsNone(runtime.row(draft['token'], draft['fence'])['evidence'])
 
     def test_invalid_history_and_stale_evidence_never_send(self):
@@ -173,7 +176,7 @@ class RetryTest(ClarificationTest):
             captures.append(pages)
         for pages in captures:
             with self.subTest(pages=pages), self.assertRaises(ValueError):
-                runtime.observe(draft['token'], draft['fence'], pages, now=due)
+                runtime.observe(draft['token'], draft['fence'], pages, now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
             self.assertIsNone(runtime.row(draft['token'], draft['fence'])['evidence'])
         sent = runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent', now=due)
         self.assertNotIn('candidate_id', sent)
@@ -185,7 +188,7 @@ class RetryTest(ClarificationTest):
         runtime, history, drafts, due, pending, draft = self.retry_draft()
         before = runtime.coach.status(), self.cli('list')
         history.insert(0, self.message('105', due, 'The first task'))
-        evidence = runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+        evidence = runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         self.assertFalse(evidence['complete'])
         with self.assertRaises(ValueError):
             runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent', now=due)
@@ -193,20 +196,20 @@ class RetryTest(ClarificationTest):
         self.assertEqual((runtime.coach.status(), self.cli('list')), before)
         args = dict(binding=BINDING, clarification_id=pending['id'], task_id=drafts[0]['task']['id'],
                     selection_message_id='105', pages=self.pages(history, due), now=due)
-        chosen = runtime.resolve_clarification(**args)
-        self.assertEqual(Driver(self.data).resolve_clarification(**args), chosen)
+        chosen = runtime.resolve_clarification(**args, history_plan=history_request(runtime, 'resolve_clarification', **args))
+        self.assertEqual(Driver(self.data).resolve_clarification(**args, history_plan=history_request(Driver(self.data), 'resolve_clarification', **args)), chosen)
         self.assertEqual(chosen['context']['task_id'], drafts[0]['task']['id'])
 
     def test_final_boundary_dismissal_blocks_stale_retry(self):
         runtime, history, drafts, due, pending, draft = self.retry_draft()
-        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         test = self
         class Racing(Driver):
             def authorize(self, row, *, now=None):
                 super().authorize(row, now=now)
                 history.insert(0, test.message('105', due, 'Never mind'))
                 Driver(test.data).dismiss_clarification(binding=BINDING, clarification_id=pending['id'],
-                    dismissal_message_id='105', pages=test.pages(history, due), now=due)
+                    dismissal_message_id='105', pages=test.pages(history, due), now=due, history_plan=history_request(Driver(test.data), 'dismiss_clarification', dismissal_message_id='105'))
         sent = Racing(self.data).dispatch(draft['token'], draft['fence'], hermes=str(self.data.parent / 'sender'), now=due)
         self.assertNotIn('candidate_id', sent)
         self.assertIn('uncertain', sent)
@@ -214,16 +217,16 @@ class RetryTest(ClarificationTest):
 
     def test_uncertain_retry_recovers_late_receipt_without_resending_or_engaging(self):
         runtime, history, drafts, due, pending, draft = self.retry_draft()
-        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         sent = runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent', now=due)
         self.assertEqual(sent['state'], 'sending')
         later = '2030-01-08T09:00:00Z'
         self.assertNotEqual(runtime.preflight(now=later).get('reason'), 'unconfirmed-delivery')
         history.insert(0, self.message('110', due, draft['body'], bot=True))
         before = runtime.coach.status(), self.cli('list')
-        receipt = Driver(self.data).confirm(draft['token'], draft['fence'], self.pages(history, later), now=later, message_id='110')
+        receipt = Driver(self.data).confirm(draft['token'], draft['fence'], self.pages(history, later), now=later, message_id='110', history_plan=history_request(Driver(self.data), 'confirm', draft['token'], draft['fence'], message_id='110'))
         self.assertEqual(receipt['message_id'], '110')
-        self.assertEqual(Driver(self.data).confirm(draft['token'], draft['fence'], [], now=later), receipt)
+        self.assertEqual(Driver(self.data).confirm(draft['token'], draft['fence'], self.pages(history, later), now=later, history_plan=history_request(Driver(self.data), 'confirm', draft['token'], draft['fence'])), receipt)
         self.assertEqual((runtime.coach.status(), self.cli('list')), before)
         with self.assertRaises(ValueError):
             runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent', now=later)
@@ -235,7 +238,7 @@ class RetryTest(ClarificationTest):
         runtime, history, drafts, now = self.fixture()
         friday = '2030-03-08T21:00:00Z'
         history.insert(0, self.message('104', friday, 'That one'))
-        pending = runtime.engagement(BINDING, self.pages(history, friday), now=friday)['clarifications'][0]
+        pending = runtime.engagement(BINDING, self.pages(history, friday), now=friday, history_plan=history_request(runtime, 'engagement'))['clarifications'][0]
         for when in (friday, '2030-03-09T14:00:00Z', '2030-03-10T13:00:00Z', '2030-03-11T12:59:00Z'):
             runtime.preflight(now=when)
             self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')
@@ -258,7 +261,7 @@ class RetryTest(ClarificationTest):
         runtime, history, drafts, now = self.fixture()
         original_time = (instant(now) + timedelta(seconds=20)).isoformat()
         history.insert(0, self.message('104', original_time, 'That one'))
-        runtime.engagement(BINDING, self.pages(history, original_time), now=original_time)
+        runtime.engagement(BINDING, self.pages(history, original_time), now=original_time, history_plan=history_request(runtime, 'engagement'))
         due = (instant(original_time) + timedelta(minutes=30)).isoformat()
         offered = runtime.preflight(now=due)
         self.assertTrue(offered['wakeAgent'])
@@ -273,7 +276,7 @@ class RetryTest(ClarificationTest):
                 due = runtime.status()['clarification_retry']['events'][index]['slot']
                 offered = runtime.preflight(now=due)
                 draft = runtime.draft(offered['intent']['event_token'], 'Which of the two tasks?', now=due)
-            runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+            runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
             sender = self.data.parent / 'budget-sender'
             identifier = str(110 + index)
             sender.write_text('#!' + sys.executable + '\nprint(' + repr(json.dumps(dict(success=True, message_id=identifier))) + ')\n')
@@ -281,7 +284,7 @@ class RetryTest(ClarificationTest):
             sent = runtime.dispatch(draft['token'], draft['fence'], hermes=str(sender), now=due)
             self.assertEqual(sent['candidate_id'], identifier)
             history.insert(0, self.message(identifier, due, draft['body'], bot=True))
-            runtime.confirm(draft['token'], draft['fence'], self.pages(history, due), now=due)
+            runtime.confirm(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence']))
         later = (instant(due)+timedelta(minutes=30)).isoformat()
         self.assertFalse(Driver(self.data).preflight(now=later)['wakeAgent'])
         self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')
@@ -293,7 +296,7 @@ class RetryTest(ClarificationTest):
     def test_resolved_and_resolving_are_immune_to_retirement(self):
         runtime, history, drafts, now, pending = self.held()
         history.insert(0, self.message('105', now, 'First task'))
-        chosen = runtime.resolve_clarification(binding=BINDING, clarification_id=pending['id'], task_id=drafts[0]['task']['id'], selection_message_id='105', pages=self.pages(history, now), now=now)
+        chosen = runtime.resolve_clarification(binding=BINDING, clarification_id=pending['id'], task_id=drafts[0]['task']['id'], selection_message_id='105', pages=self.pages(history, now), now=now, history_plan=history_request(runtime, 'resolve_clarification', selection_message_id='105'))
         record = runtime.status()['clarifications'][pending['id']]
         runtime.preflight(now='2030-01-08T09:00:00Z')
         self.assertEqual(runtime.status()['clarifications'][pending['id']], record)
@@ -314,38 +317,39 @@ class RetryTest(ClarificationTest):
         self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')
         with self.assertRaises(ValueError):
             runtime.configure(dict(runtime.status()['route'], bot_id='999'), confirm=True)
+            enable_history(runtime)
 
     def test_retry_response_identity_cannot_be_reused_for_a_different_hold(self):
         runtime, history, drafts, now = self.fixture()
         history[:0] = [self.message('105', now, 'Other one'), self.message('104', now, 'That one')]
-        held = runtime.engagement(BINDING, self.pages(history, now), now=now)['clarifications']
+        held = runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))['clarifications']
         due = (instant(now)+timedelta(minutes=30)).isoformat()
         offered = runtime.preflight(now=due)
         draft = runtime.draft(offered['intent']['event_token'], 'Which task?', now=due)
         history.insert(0, self.message('106', due, 'The first question'))
-        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         records = runtime.status()['clarifications']
         self.assertFalse(any(c.get('responses') for c in records.values()))
         newer = next(c for c in records.values() if c['message']['id'] == '105')
         older = next(c for c in records.values() if c['message']['id'] == '104')
         args = dict(binding=BINDING, clarification_id=newer['id'], dismissal_message_id='106', pages=self.pages(history, due), now=due)
-        result = Driver(self.data).dismiss_clarification(**args)
-        self.assertEqual(Driver(self.data).dismiss_clarification(**args), result)
+        result = Driver(self.data).dismiss_clarification(**args, history_plan=history_request(Driver(self.data), 'dismiss_clarification', **args))
+        self.assertEqual(Driver(self.data).dismiss_clarification(**args, history_plan=history_request(Driver(self.data), 'dismiss_clarification', **args)), result)
         with self.assertRaisesRegex(ValueError, 'already belongs'):
-            runtime.dismiss_clarification(**dict(args, clarification_id=older['id']))
+            runtime.dismiss_clarification(**dict(args, clarification_id=older['id']), history_plan=history_request(runtime, 'dismiss_clarification', **dict(args, clarification_id=older['id'])))
         Driver.validate_state(runtime.status())
 
     def trusted_shared_reply(self, *, resolve):
         runtime, history, drafts, now = self.fixture()
         history[:0] = [self.message('105', now, 'Other one'), self.message('104', now, 'That one')]
-        held = runtime.engagement(BINDING, self.pages(history, now), now=now)['clarifications']
+        held = runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))['clarifications']
         due = (instant(now) + timedelta(minutes=30)).isoformat()
         offered = runtime.preflight(now=due)
         draft = runtime.draft(offered['intent']['event_token'], 'Which question and task?', now=due)
-        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent', now=due)
         history.insert(0, self.message('110', due, draft['body'], bot=True))
-        runtime.confirm(draft['token'], draft['fence'], self.pages(history, due), now=due, message_id='110')
+        runtime.confirm(draft['token'], draft['fence'], self.pages(history, due), now=due, message_id='110', history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id='110'))
         history.insert(0, self.message('111', due, 'For the newer question: first task'))
         capture = self.data.parent / 'trusted-shared-pages.json'
         pages = self.pages(history, due)
@@ -384,26 +388,26 @@ class RetryTest(ClarificationTest):
             else:
                 message['message_reference'] = dict(message_id='100', channel_id='123')
             with self.subTest(resolve=resolve, mutation=mutation), self.assertRaises(ValueError):
-                getattr(Driver(self.data), method)(**dict(args, pages=changed))
+                getattr(Driver(self.data), method)(**dict(args, pages=changed), history_plan=history_request(Driver(self.data), method, **dict(args, pages=changed)))
             self.assertEqual(Driver(self.data).status(), before)
         conflicting = copy.deepcopy(pages)
         conflicting[0]['result']['messages'][0]['message_reference'] = dict(message_id='100', channel_id='123')
         with self.assertRaisesRegex(ValueError, 'conflicting reply target'):
             Driver(self.data).engagement(BINDING, conflicting, now=due,
-                                         reply_to_message_id='110', inbound_message_id='111')
+                                         reply_to_message_id='110', inbound_message_id='111', history_plan=history_request(Driver(self.data), 'engagement', reply_to_message_id='110'))
         cli_args = [command, '--binding', json.dumps(BINDING), '--clarification-id', newer['id'],
                     flag, '111', '--pages-file', str(capture)]
         if resolve:
             cli_args += ['--task-id', str(drafts[0]['task']['id'])]
         chosen = self.at_cli(due, *cli_args)
         self.assertTrue(chosen['engaged' if resolve else 'dismissed'])
-        self.assertEqual(getattr(Driver(self.data), method)(**dict(args, pages=[])), chosen)
+        self.assertEqual(getattr(Driver(self.data), method)(**dict(args, pages=self.pages(history, due)), history_plan=history_request(Driver(self.data), method, **dict(args, pages=self.pages(history, due)))), chosen)
         self.assertEqual(self.at_cli(due, *cli_args), chosen)
         for other_method, extra in (('resolve_clarification', dict(task_id=drafts[0]['task']['id'], selection_message_id='111')),
                                     ('dismiss_clarification', dict(dismissal_message_id='111'))):
             with self.assertRaisesRegex(ValueError, 'already belongs'):
                 getattr(Driver(self.data), other_method)(binding=BINDING, clarification_id=older['id'],
-                                                         pages=pages, now=due, **extra)
+                                                         pages=pages, now=due, **extra, history_plan=history_request(Driver(self.data), other_method, **extra))
         state = Driver(self.data).status()
         self.assertEqual(state['clarifications'][newer['id']]['selection' if resolve else 'dismissal'], history[0])
         self.assertEqual(state['clarifications'][older['id']]['state'], 'pending')
@@ -423,7 +427,7 @@ class RetryTest(ClarificationTest):
         runtime.preflight(now=now)
         due = (instant(now) + timedelta(minutes=30)).isoformat()
         history.insert(0, self.message('105', due, 'First task'))
-        runtime.engagement(BINDING, self.pages(history, due), now=due)
+        runtime.engagement(BINDING, self.pages(history, due), now=due, history_plan=history_request(runtime, 'engagement'))
         record = runtime.status()['clarifications'][pending['id']]
         self.assertEqual(record['responses'], [history[0]])
         self.assertNotIn('message_reference', record['responses'][0])
@@ -494,7 +498,7 @@ class RetryTest(ClarificationTest):
         method = 'resolve_clarification' if resolve else 'dismiss_clarification'
         extra = dict(task_id=drafts[0]['task']['id'], selection_message_id='105') if resolve else dict(dismissal_message_id='105')
         self.assertEqual(getattr(Driver(self.data), method)(binding=BINDING, clarification_id=pending['id'],
-                         pages=[], now=due, **extra), result)
+                         pages=self.pages(history, due), now=due, **extra, history_plan=history_request(Driver(self.data), method, **extra)), result)
         valid = Driver(self.data).status()
         field = 'selection' if resolve else 'dismissal'
         record = valid['clarifications'][pending['id']]
@@ -539,11 +543,11 @@ class RetryTest(ClarificationTest):
         event = runtime.coach.status()['episode']['next_tasks'][0]['events'][1]
         when = event['slot']
         draft = runtime.draft(event['token'], 'Unconfirmed ordinary followup', now=when)
-        evidence = runtime.observe(draft['token'], draft['fence'], self.pages(history, when), now=when)
+        evidence = runtime.observe(draft['token'], draft['fence'], self.pages(history, when), now=when, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         claimed = runtime.coach.tick(now=when, binding=BINDING, evidence=evidence, expected_token=event['token'])
         self.assertTrue(claimed['wakeAgent'])
         history.insert(0, self.message('104', when, 'That one'))
-        pending = runtime.engagement(BINDING, self.pages(history, when), now=when)['clarifications'][0]
+        pending = runtime.engagement(BINDING, self.pages(history, when), now=when, history_plan=history_request(runtime, 'engagement'))['clarifications'][0]
         engine = runtime.coach.status()
         for due in ((instant(when)+timedelta(minutes=30)).isoformat(),):
             self.assertFalse(runtime.preflight(now=due)['wakeAgent'])
@@ -553,7 +557,7 @@ class RetryTest(ClarificationTest):
 
     def test_engine_claim_at_final_boundary_blocks_retry_sender(self):
         runtime, history, drafts, due, pending, draft = self.retry_draft()
-        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         class Racing(Driver):
             def authorize(self, row, *, now=None):
                 super().authorize(row, now=now)
@@ -616,12 +620,12 @@ class RetryTest(ClarificationTest):
     def test_shared_quarantine_is_strictly_validated(self):
         runtime, history, drafts, now = self.fixture()
         history[:0] = [self.message('105', now, 'Other one'), self.message('104', now, 'That one')]
-        held = runtime.engagement(BINDING, self.pages(history, now), now=now)['clarifications']
+        held = runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))['clarifications']
         due = (instant(now)+timedelta(minutes=30)).isoformat()
         offered = runtime.preflight(now=due)
         draft = runtime.draft(offered['intent']['event_token'], 'Which task?', now=due)
         history.insert(0, self.message('106', due, 'Newer question'))
-        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         valid = runtime.status()
         for mutation in ('duplicate', 'unknown', 'consumed', 'author', 'timestamp', 'null'):
             state = copy.deepcopy(valid)
@@ -644,37 +648,37 @@ class RetryTest(ClarificationTest):
     def test_shared_reply_before_cycle_creation_survives_retirement(self):
         runtime, history, drafts, now = self.fixture()
         history[:0] = [self.message('105', now, 'Other one'), self.message('104', now, 'That one')]
-        runtime.engagement(BINDING, self.pages(history, now), now=now)
+        runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         history.insert(0, self.message('106', now, 'Newer question'))
-        runtime.engagement(BINDING, self.pages(history, now), now=now)
+        runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         self.assertEqual([r['message']['id'] for r in runtime.status().get('clarification_responses', [])], ['106'])
         due = (instant(now)+timedelta(minutes=30)).isoformat()
         self.assertFalse(runtime.preflight(now=due)['wakeAgent'])
         later = '2030-01-08T09:00:00Z'
         runtime.preflight(now=later)
-        self.assertFalse(runtime.engagement(BINDING, self.pages(history, later), now=later)['engaged'])
+        self.assertFalse(runtime.engagement(BINDING, self.pages(history, later), now=later, history_plan=history_request(runtime, 'engagement'))['engaged'])
         self.assertEqual(len(runtime.status()['clarifications']), 2)
 
     def test_shared_confirm_and_engagement_do_not_preassign_later_selection(self):
         runtime, history, drafts, now = self.fixture()
         history[:0] = [self.message('105', now, 'Other one'), self.message('104', now, 'That one')]
-        held = runtime.engagement(BINDING, self.pages(history, now), now=now)['clarifications']
+        held = runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))['clarifications']
         due = (instant(now)+timedelta(minutes=30)).isoformat()
         offered = runtime.preflight(now=due)
         draft = runtime.draft(offered['intent']['event_token'], 'Which task?', now=due)
-        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent', now=due)
         history[:0] = [self.message('111', due, 'Newer question, first task'), self.message('110', due, draft['body'], bot=True)]
-        runtime.engagement(BINDING, self.pages(history, due), now=due)
-        Driver(self.data).confirm(draft['token'], draft['fence'], self.pages(history, due), now=due, message_id='110')
+        runtime.engagement(BINDING, self.pages(history, due), now=due, history_plan=history_request(runtime, 'engagement'))
+        Driver(self.data).confirm(draft['token'], draft['fence'], self.pages(history, due), now=due, message_id='110', history_plan=history_request(Driver(self.data), 'confirm', draft['token'], draft['fence'], message_id='110'))
         newer = next(c for c in held if c['message']['id'] == '105')
         args = dict(binding=BINDING, clarification_id=newer['id'], task_id=drafts[0]['task']['id'],
                     selection_message_id='111', pages=self.pages(history, due), now=due)
-        chosen = runtime.resolve_clarification(**args)
-        self.assertEqual(Driver(self.data).resolve_clarification(**args), chosen)
+        chosen = runtime.resolve_clarification(**args, history_plan=history_request(runtime, 'resolve_clarification', **args))
+        self.assertEqual(Driver(self.data).resolve_clarification(**args, history_plan=history_request(Driver(self.data), 'resolve_clarification', **args)), chosen)
         older = next(c for c in held if c['message']['id'] == '104')
         with self.assertRaisesRegex(ValueError, 'already belongs'):
-            runtime.resolve_clarification(**dict(args, clarification_id=older['id']))
+            runtime.resolve_clarification(**dict(args, clarification_id=older['id']), history_plan=history_request(runtime, 'resolve_clarification', **dict(args, clarification_id=older['id'])))
         self.assertNotIn('111', [r['message']['id'] for r in runtime.status()['clarification_responses']])
 
     def test_legacy_engine_uncertainty_without_outbox_attempt_never_retires(self):
@@ -701,7 +705,7 @@ class RetryTest(ClarificationTest):
     def test_shared_draft_hold_identity_cannot_be_silently_narrowed(self):
         runtime, history, drafts, now = self.fixture()
         history[:0] = [self.message('105', now, 'Other one'), self.message('104', now, 'That one')]
-        runtime.engagement(BINDING, self.pages(history, now), now=now)
+        runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         due = (instant(now)+timedelta(minutes=30)).isoformat()
         offered = runtime.preflight(now=due)
         draft = runtime.draft(offered['intent']['event_token'], 'Which task?', now=due)
@@ -739,7 +743,7 @@ class RetryTest(ClarificationTest):
 
     def test_subprocess_dispatch_contention_sends_only_once(self):
         runtime, history, drafts, due, pending, draft = self.retry_draft()
-        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         sender = self.data.parent / 'contention-sender'
         marker = self.data.parent / 'synthetic-sends'
         sender.write_text('#!' + sys.executable + '\nwith open(' + repr(str(marker)) + ', "a") as f: f.write("send\\n")\nprint(\'{"success":true,"message_id":"110"}\')\n')
@@ -754,12 +758,13 @@ class RetryTest(ClarificationTest):
     def test_subprocess_shared_reply_binding_is_single_use(self):
         runtime, history, drafts, now = self.fixture()
         history[:0] = [self.message('105', now, 'Other one'), self.message('104', now, 'That one')]
-        held = runtime.engagement(BINDING, self.pages(history, now), now=now)['clarifications']
+        held = runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))['clarifications']
         history.insert(0, self.message('106', now, 'Dismiss that question'))
-        runtime.engagement(BINDING, self.pages(history, now), now=now)
+        runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         sources = []
         for record in held:
-            args = dict(binding=BINDING, clarification_id=record['id'], dismissal_message_id='106', pages=self.pages(history, now), now=now)
+            args = dict(binding=BINDING, clarification_id=record['id'], dismissal_message_id='106', pages=self.pages(history, now), now=now,
+                        history_plan=history_request(runtime, 'dismiss_clarification', dismissal_message_id='106'))
             sources.append('try:\n r=Driver(' + repr(str(self.data)) + ').dismiss_clarification(**' + repr(args) + ')\n print(json.dumps(r))\nexcept ValueError as e:\n print(json.dumps({"refused":str(e)}))\n')
         results = self.subprocess_workers(sources)
         self.assertEqual(sum(r.get('dismissed', False) for r in results), 1)
@@ -824,7 +829,7 @@ class RetryTest(ClarificationTest):
         # Retained receipts can produce a normal-inbound hold before a later day's window.
         early = '2030-01-08T08:40:00Z'
         history.insert(0, self.message('104', early, 'That one'))
-        record = runtime.engagement(BINDING, self.pages(history, early), now=early)['clarifications'][0]
+        record = runtime.engagement(BINDING, self.pages(history, early), now=early, history_plan=history_request(runtime, 'engagement'))['clarifications'][0]
         runtime.preflight(now=early)
         self.assertEqual(runtime.status()['clarifications'][record['id']]['state'], 'pending')
         runtime.preflight(now='2030-01-08T09:00:00Z')
@@ -833,10 +838,10 @@ class RetryTest(ClarificationTest):
 
     def test_confirmed_retry_quarantines_owner_reply_in_its_fresh_readback(self):
         runtime, history, drafts, due, pending, draft = self.retry_draft()
-        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent', now=due)
         history[:0] = [self.message('111', due, 'The first task'), self.message('110', due, draft['body'], bot=True)]
-        runtime.confirm(draft['token'], draft['fence'], self.pages(history, due), now=due, message_id='110')
+        runtime.confirm(draft['token'], draft['fence'], self.pages(history, due), now=due, message_id='110', history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id='110'))
         record = runtime.status()['clarifications'][pending['id']]
         self.assertEqual([m['id'] for m in record.get('responses', [])], ['111'])
         self.assertFalse(runtime.preflight(now=(instant(due)+timedelta(minutes=30)).isoformat())['wakeAgent'])
@@ -864,11 +869,11 @@ class RetryTest(ClarificationTest):
                 history.append(self.message(row['receipt']['message_id'], row['receipt']['delivered_at'], row['body'], bot=True))
         history.sort(key=lambda m: int(m['id']), reverse=True)
         with self.assertRaisesRegex(ValueError, 'retry receipt'):
-            runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+            runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
 
     def final_reply_race(self, *, resolve):
         runtime, history, drafts, due, pending, draft = self.retry_draft()
-        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due)
+        runtime.observe(draft['token'], draft['fence'], self.pages(history, due), now=due, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         test = self
         class Racing(Driver):
             def authorize(self, row, *, now=None):
@@ -877,9 +882,9 @@ class RetryTest(ClarificationTest):
                 other = Driver(test.data)
                 if resolve:
                     other.resolve_clarification(binding=BINDING, clarification_id=pending['id'], task_id=drafts[0]['task']['id'],
-                        selection_message_id='105', pages=test.pages(history, due), now=due)
+                        selection_message_id='105', pages=test.pages(history, due), now=due, history_plan=history_request(other, 'resolve_clarification', selection_message_id='105'))
                 else:
-                    other.engagement(BINDING, test.pages(history, due), now=due)
+                    other.engagement(BINDING, test.pages(history, due), now=due, history_plan=history_request(other, 'engagement'))
         sent = Racing(self.data).dispatch(draft['token'], draft['fence'], hermes=str(self.data.parent / 'sender'), now=due)
         self.assertNotIn('candidate_id', sent)
         self.assertIn('uncertain', sent)

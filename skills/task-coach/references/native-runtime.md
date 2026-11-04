@@ -1,6 +1,60 @@
 # Native Hermes runtime: optional Discord adapter
 
-## Local-first proactive policy (0.1.0rc5)
+## Discord history consent and bounded on-demand use (rc6)
+
+History is OFF by default for fresh stores and all older stores without a saved
+preference. A configured Discord route or an available tool is not consent.
+Local task management, accepted delivery and trusted local-first engagement work
+without history. Never fetch history in routine cron, even after opt-in.
+Only explicitly requested **reply-recovery** or **delivery-verification** may read
+history, after checking exact-route saved consent and caller tool availability.
+No automatic needs detector or routine scan is implemented.
+
+Read `runtime history-preference` to reuse the actual saved choice when setup
+resumes. After confirmed Discord check-in setup, persist an explicit Yes using
+`runtime history-preference --enable --route FULL_CONFIRMED_ROUTE_JSON --confirm-history`.
+An explicit No/change uses `runtime history-preference --disable`; read back the
+preference after either change. Missing preferences already mean No, not approval.
+Consent includes the exact owner/profile/account/chat/thread, channel and bot route;
+a changed route needs new consent. Disable/re-enable rotates the grant generation.
+
+For each explicitly requested operation, run
+`runtime history-plan --purpose reply-recovery|delivery-verification --target DECIMAL_ID --confirm-history`
+and save its returned JSON dict in a private plan file. The grant binds the exact
+route, generation, purpose and target: fetch only the latest **25 messages, ONE page**,
+`before=null`, at most **131072 bytes** total and **8192 bytes** per message.
+Never chase old anchors or fetch additional pages. Preserve genuine raw tool
+results with trusted metadata and request-start timestamps. Pass
+`--history-plan-file PLAN_FILE` with `--pages-file CAPTURE_FILE` to every applicable
+history ingress (`observe`, `confirm`, `engagement`, `resolve-clarification`,
+`dismiss-clarification`). Use `delivery-verification` for `confirm`, targeting the
+exact sent candidate message ID. Use `reply-recovery` for `observe` and
+`engagement`, targeting the exact previous/selected receipt ID; for
+`resolve-clarification` target `OWNER_SELECTION_ID`, and for
+`dismiss-clarification` target `OWNER_DISMISSAL_ID` instead (not the older receipt
+needed in that same captured page). Each command below needs its own matching
+purpose/target plan; do not reuse another operation's plan. Do not fabricate
+captures or reply references. An absent
+anchor or insufficient evidence is an optional warning, not permission to expand
+the read or block accepted/local-first work; never claim unverified delivery.
+
+The plan represents **caller-asserted explicit user intent**, not cryptographic
+proof that the user asked. Helper gates do not sandbox arbitrary external tools.
+Review/refresh existing installed instructions and tool allowlists after enabling
+or disabling; persisted core denial takes effect immediately. Deny history tools
+in routine cron, review normal-inbound access separately, and never auto-provision
+an MCP/hosted connector. Capabilities separates saved current-route consent,
+caller-reported tool availability and independent delivery evidence; availability
+and consent never establish verified delivery.
+
+A preserved legacy episode day retains its existing honest history gates. If
+work needs unavailable/unapproved evidence, stop that work and explain the limit;
+never automatically read, bypass the gate, revive stopped slots or resend an
+uncertain attempt. Local-first begins at the established later-day boundary.
+Native-plan is a read-only preview: no adoption, route mutation or installation;
+its cron remains initially paused with both delivery targets local.
+
+## Local-first proactive policy (0.1.0rc6)
 
 Fresh runtime stores use local-first policy by default. After a code update,
 known existing runtime stores automatically adopt it on first ordinary runtime
@@ -71,16 +125,16 @@ recurrence cycle and atomic write/send fences remain hard controls.
 2. `runtime preflight`: quiet local guards mean stop. For due ordinary work,
    compose one short question for the returned current task. Store plain text in
    a private body file; run `runtime draft --event-token TOKEN --body-file FILE`.
-3. Optionally use supported native history and `runtime observe` when available.
-   Preserve real raw pages and trusted metadata; never fabricate captures. A failed
-   optional observation is a visible degradation, not a prerequisite to dispatch.
+3. Do not fetch history in routine cron. Optional observe/enrichment belongs only
+   to a separately explicitly requested, consented on-demand operation above.
 4. `runtime dispatch --event-token TOKEN --fence FENCE --hermes ABSOLUTE_EXECUTABLE`
    performs final local authorization and the only send. Read back `runtime status`.
    `accepted` is a durable positive native response and permits subsequent ordinary
    work; `sending`/`uncertain` is not success and must never be resent. Report actual
    send failures/uncertainty as `[CRON_FAILURE]`. Independent readback warnings do
    not mean that the accepted send failed.
-5. Optional `runtime confirm --event-token TOKEN --fence FENCE --pages-file FILE`
+5. Only for explicitly requested, consented on-demand delivery verification,
+   `runtime confirm --event-token TOKEN --fence FENCE --pages-file FILE --history-plan-file PLAN_FILE`
    independently verifies bot/body/time/route and records confirmed provenance,
    retaining the original acceptance. Do not wait for it before later valid work.
    Never echo the check-in in commentary/final output: the helper owns delivery.
@@ -156,6 +210,13 @@ engagement to a later task. An explicit one-check-in test stays one opener with
 no follow-ups or additional tasks, regardless of the maximum.
 
 ## Confirmed onboarding, paused native job
+
+After the user chooses Discord check-ins and confirms the destination, ask the
+separate default-No history question in the skill's Guided onboarding section.
+Explain unrelated conversation exposure and repeated model input-token costs;
+core coaching works without it. Read the actual saved preference on resumed
+setup, persist only the explicit choice with the real history-preference CLI,
+and offer later disable. Local-only setup never asks this Discord question.
 
 Initialize task preferences with `setup`; this does not enable automation. Ask the
 user to select an already configured Hermes destination. Use native
@@ -295,8 +356,14 @@ say check-ins are paused, not that proactive setup is complete.
 
 ## Complete CLI lifecycle (legacy policy only)
 
+All history examples below require a separately requested on-demand purpose,
+exact-route consent and `--history-plan-file PLAN_FILE`. Descriptions of full
+anchor/attempt coverage are validation requirements, NOT authority to fetch more
+than one latest 25-message page. If that bounded page cannot satisfy them, refuse
+the enrichment and explain the limit. Scheduled turns never fetch to satisfy them.
+
 The history-gated protocol in this section is retained only for the preserved
-legacy episode day during automatic adoption. It is **not** the rc5
+legacy episode day during automatic adoption. It is **not** the rc6
 local-first path above. Its pending/uncertain global locks and mandatory history
 requirements must never be imposed on local-first scheduling.
 
@@ -310,11 +377,11 @@ Prefix each command with the explicit installed helper and consistent data path:
 | `runtime configure --route JSON --confirm-setup` | Explicit route opt-in, not account setup |
 | `runtime native-plan --profile-home PATH --python PATH --helper PATH --hermes PATH` | Emit wrapper/paused cron/scoped inbound artifacts only |
 | `runtime draft --event-token TOKEN --body-file PATH` | Immutable plain text draft and unique fence; no claim/send |
-| `runtime observe --event-token TOKEN --fence FENCE --pages-file PATH` | Validate fresh full history and derive evidence/reply-stop |
+| `runtime observe --event-token TOKEN --fence FENCE --pages-file PATH --history-plan-file PLAN_FILE` | Validate fresh full history and derive evidence/reply-stop |
 | `runtime dispatch --event-token TOKEN --fence FENCE --hermes PATH` | Exact-token claim, final authorization, durable sending, one native send attempt |
-| `runtime confirm --event-token TOKEN --fence FENCE --pages-file PATH [--message-id ID]` | Exact sent-message readback and receipt reconciliation |
+| `runtime confirm --event-token TOKEN --fence FENCE --pages-file PATH --history-plan-file PLAN_FILE [--message-id ID]` | Exact sent-message readback and receipt reconciliation |
 | `runtime context --binding JSON [--reply-to-message-id ID]` | Exact target receipt/current task, or latest receipt only when one distinct task is known; null for unrelated targets or multiple tasks without a target |
-| `runtime engagement --binding JSON --pages-file PATH [--reply-to-message-id TARGET --inbound-message-id ID]` | Attribute captured owner posts, stop only their matching task sequences, return the newest owner's context or null; paired flags select one trusted inbound reply |
+| `runtime engagement --binding JSON --pages-file PATH --history-plan-file PLAN_FILE [--reply-to-message-id TARGET --inbound-message-id ID]` | Attribute captured owner posts, stop only their matching task sequences, return the newest owner's context or null; paired flags select one trusted inbound reply |
 | `coach pause` / `coach resume` / `coach status` | Persistent controls and readback; resume never revives stopped episodes |
 
 Production CLI has no synthetic clock or RNG flags. API tests may inject clocks.
@@ -344,10 +411,14 @@ cursor to the sent ID itself so replies between send and readback are not lost.
 If a crash lost the send response, `--message-id ID` can identify a candidate from
 real history for a previously journaled sending attempt. It cannot fabricate an
 attempt or retry. Exact bot/body/send-time matching is mandatory. Without a
-journaled candidate ID, capture fresh history from latest through **strictly
-before attempted_at**, or to complete end of history (a short final page, including
-an empty terminal page). Cover the whole interval from the attempt to the fresh
-readback, not just the selected candidate. All raw messages and pages are validated,
+journaled candidate ID, the one consented latest page must cover **strictly
+before attempted_at**, or prove end of history with a nonempty page shorter than
+its effective fetch limit (the minimum of the planned 25-message cap and supplied
+page/result limits). A full smaller-limit page is not end-of-history proof.
+An empty page cannot recover delivery: public ingress requires the exact target
+in a nonempty capture. If the page
+cannot cover the whole interval, recovery is unavailable: do not fetch more.
+The selected candidate alone is insufficient. All captured raw messages are validated,
 including those older than the selected candidate on its page. Exactly one message
 may match the bot, body and timestamp in that interval; multiple matches reject
 recovery whichever ID is selected. An operator's choice is not delivery proof.
@@ -355,7 +426,7 @@ Missing coverage leaves the attempt uncertain; never resend. A journaled positiv
 candidate ID instead requires exact readback through that ID; a conflicting
 operator ID is rejected. Confirmed receipts are immutable even after day rollover
 and restart. Repeating the same ID (or omitting it) returns the stored receipt
-without changing accounting or requiring a new capture; another ID is rejected.
+without changing accounting, but still validates the authorized fresh capture; another ID is rejected.
 
 Late confirmation records the truth without clearing pause/engagement or
 reviving an expired episode. A platform outcome that itself arrives after the
@@ -425,43 +496,16 @@ an outbox or bypass dispatch as an operator workaround for a refused restart.
 
 ## History capture format and coverage
 
-For local-first this entire capture/clarification enhancement is optional and
-nonblocking. The legacy protocol alone requires it before sends. Pending questions
-remain auditable but do not globally hold local-first ordinary check-ins.
-
-Use native `discord` action `fetch_messages` with exact channel_id, `limit:100`.
-Start at latest with neither before nor after; then use `before` equal to the
-oldest returned message ID. Do not use an after-only query: forward limits can
-hide replies. Continue backward to the **exact** previous sent ID for observe, or
-the journaled candidate sent ID for confirm. For lost-response recovery with no
-journaled candidate, continue past the selected ID until history reaches strictly
-before the attempt start or a short/empty final page proves end of history. Do
-not trim a raw page at the selected ID. Capture each unmodified raw tool result:
-
-```json
-[
-  {
-    "binding": {"owner":"OWNER_ID","profile":"ACTIVE_PROFILE_ID","account":"ACCOUNT_ID","chat":"CHANNEL_ID","thread":"none"},
-    "channel_id":"CHANNEL_ID",
-    "before":null,
-    "observed_at":"2030-01-07T12:00:00Z",
-    "result":{"messages":[{"id":"100","content":"actual bot body","timestamp":"2030-01-07T11:59:59Z","author":{"id":"BOT_ID","bot":true},"attachments":[]}],"count":1}
-  }
-]
-```
-
-The illustrated values are fictional. Never invent messages or replace the raw
-result with a summary. observed_at is the live UTC time recorded at **request
-start**, not when the result finishes. Subsequent envelopes use before=oldest ID
-from the preceding page and their own request-start timestamp. Every page must be
-at most 60 seconds old at authorization; refresh **from latest** if pagination is
-slow. Budget is 20 pages (up to 2000 messages). Missing anchor, short page before
-anchor, empty/error/malformed output (except an empty terminal page proving end
-of history for lost-response recovery), route mismatch, duplicate/nondecreasing IDs,
-nonordered/future timestamps or stale capture rejects coverage. Permission/content
-limitations that prevent exact send readback mean keep the job paused. History
-comes from agent tool captures, not cryptographic provenance: the agent/operator
-must use actual native tool output, not manually assert qualification.
+The rc6 consent and bounded on-demand contract above governs all captures,
+including legacy examples below. Never perform routine cron history reads.
+Use native Discord `fetch_messages` for the exact granted channel, limit 25,
+latest only (`before=null`). Retain a single raw result in the existing page
+envelope (`binding`, `channel_id`, `before`, `observed_at`, `result`, optional
+trusted `reply_targets`). Enforce 131072 payload bytes and 8192 per message;
+never truncate evidence into a plausible capture. Pass the exact grant through
+`--history-plan-file` on all history ingress. Missing anchors or incomplete
+attempt coverage make independent verification/recovery unavailable; never
+page backward or claim success without evidence.
 
 ### Reply attribution and trusted capture interface
 
@@ -494,7 +538,7 @@ caller, leave the mapping absent and accept the conservative block.
 
 For one trusted inbound explicit reply, `runtime context --binding JSON
 --reply-to-message-id TARGET` returns that exact receipt and current task.
-`runtime engagement --binding JSON --pages-file PATH --reply-to-message-id TARGET
+`runtime engagement --binding JSON --pages-file PATH --history-plan-file PLAN_FILE --reply-to-message-id TARGET
 --inbound-message-id ID` requires **both** IDs and verifies the exact owner message
 in fresh history through the target receipt. Flags select only that inbound post;
 observe/confirm still require complete interval captures with any available trusted
@@ -533,7 +577,7 @@ are made.
 ### Clarification before mutation
 
 1. On normal inbound only, use the approved binding and inspect `runtime status`.
-   If no clarification is pending, run context and capture real fresh raw history
+   If no clarification is pending, run context; only on explicit recovery request use the consented bounded raw history
    through the latest confirmed receipt; run engagement. If a pending record already
    exists, inspect its original message and candidate titles first, so the owner's
    selection is not mistaken for a new task reply.
@@ -544,14 +588,14 @@ are made.
    the complete guarded protocol below, never direct sends from preflight/observe.
 3. After an explicit title choice, privately map it to that record's task ID. Obtain
    the selection post ID and exact owner/profile/account/chat/thread from trusted
-   inbound context. Fetch history from latest through the **oldest candidate receipt**,
+   inbound context. The single bounded page must include the **oldest candidate receipt**,
    preserving each whole unmodified Discord result and request-start timestamp in
    the existing page envelope. Both the immutable original and later nonbot owner
    selection must be present. Do not invent reply references from words or titles.
 4. Run the guarded command (substitute actual returned values, not these placeholders):
 
    ```sh
-   python3 /absolute/skill/scripts/task-coach.py --data-dir /approved/store runtime resolve-clarification --binding '{"owner":"OWNER","profile":"PROFILE","account":"ACCOUNT","chat":"CHANNEL","thread":"none"}' --clarification-id CLARIFICATION_ID --task-id TASK_ID --selection-message-id OWNER_SELECTION_ID --pages-file /private/fresh-pages.json
+   python3 /absolute/skill/scripts/task-coach.py --data-dir /approved/store runtime resolve-clarification --binding '{"owner":"OWNER","profile":"PROFILE","account":"ACCOUNT","chat":"CHANNEL","thread":"none"}' --clarification-id CLARIFICATION_ID --task-id TASK_ID --selection-message-id OWNER_SELECTION_ID --pages-file /private/fresh-pages.json --history-plan-file /private/history-plan.json
    ```
 
    The explicit command asserts the agent has interpreted an **explicit user choice**;
@@ -664,10 +708,10 @@ After “Do you mean ‘Draft proposal’ or ‘Book appointment’?”, the own
 “never mind” or “dismiss that question”. This is explicit conversational intent,
 interpreted by the skill, **not a runtime text classifier**. Inspect pending records
 before engagement on that turn. Use the exact question and trusted later owner post
-ID; fetch fresh raw history from latest through the **oldest candidate receipt**:
+ID; only an explicitly requested, consented single page including the **oldest candidate receipt** may be used:
 
 ```sh
-python3 /absolute/skill/scripts/task-coach.py --data-dir /approved/store runtime dismiss-clarification --binding '{"owner":"OWNER","profile":"PROFILE","account":"ACCOUNT","chat":"CHANNEL","thread":"none"}' --clarification-id CLARIFICATION_ID --dismissal-message-id OWNER_DISMISSAL_ID --pages-file /private/fresh-pages.json
+python3 /absolute/skill/scripts/task-coach.py --data-dir /approved/store runtime dismiss-clarification --binding '{"owner":"OWNER","profile":"PROFILE","account":"ACCOUNT","chat":"CHANNEL","thread":"none"}' --clarification-id CLARIFICATION_ID --dismissal-message-id OWNER_DISMISSAL_ID --pages-file /private/fresh-pages.json --history-plan-file /private/history-plan.json
 ```
 
 The runtime validates the exact current route/binding, persistent nonbot owner,

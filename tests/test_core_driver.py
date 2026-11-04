@@ -1,4 +1,5 @@
 """Synthetic runtime fixtures: never live platform qualification."""
+from test_core_history_fixtures import enable_history, history_request
 import test_core_coaching as fixtures
 import unittest
 BINDING = dict(fixtures.BINDING, chat='123', thread='none')
@@ -51,11 +52,14 @@ class RuntimeTest(unittest.TestCase):
         route = dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456')
         with self.assertRaises(ValueError):
             runtime.configure(route, confirm=False)
+            enable_history(runtime)
         for malformed in (None, [], 'not-a-route'):
             with self.subTest(route=malformed), self.assertRaises(ValueError):
                 runtime.configure(malformed, confirm=True)
+                enable_history(runtime)
         persist_legacy_runtime(runtime)
         runtime.configure(route, confirm=True)
+        enable_history(runtime)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic opener', now=now)
         self.assertEqual(draft['state'], 'draft')
@@ -71,6 +75,7 @@ class RuntimeTest(unittest.TestCase):
         runtime = Driver(self.data)
         persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic opener', now=now)
         self.assertTrue(hasattr(runtime, 'dispatch'), 'native dispatch is missing')
@@ -84,14 +89,14 @@ class RuntimeTest(unittest.TestCase):
             runtime.dispatch(draft['token'], draft['fence'], hermes=str(fake), now=now)
         page = dict(binding=BINDING, channel_id='123', observed_at=now.isoformat(), before=None,
                     result=dict(messages=[dict(id='100', content='Synthetic opener', timestamp=now.isoformat(), author=dict(id='456', bot=True), attachments=[])]))
-        receipt = runtime.confirm(draft['token'], draft['fence'], [page], now=now)
+        receipt = runtime.confirm(draft['token'], draft['fence'], [page], now=now, history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence']))
         self.assertEqual(receipt['message_id'], '100')
         self.assertEqual(receipt['cursor'], '100')
         self.assertEqual(engine.status()['deliveries'], 1)
         self.assertEqual(runtime.context(BINDING)['task']['title'], 'Synthetic task')
         self.assertTrue(hasattr(runtime, 'engagement'), 'normal inbound engagement protocol missing')
         page['result']['messages'].insert(0, dict(id='101', content='A synthetic reply', timestamp=now.isoformat(), author=dict(id=BINDING['owner'], bot=False), attachments=[]))
-        self.assertTrue(runtime.engagement(BINDING, [page], now=now)['engaged'])
+        self.assertTrue(runtime.engagement(BINDING, [page], now=now, history_plan=history_request(runtime, 'engagement'))['engaged'])
         self.assertEqual(engine.status()['episode']['stopped'], 'owner-engaged')
         self.cli('update', '1', '--title', 'Current synthetic title')
         self.assertEqual(runtime.context(BINDING)['task']['title'], 'Current synthetic title', 'normal inbound context must reread current task')
@@ -110,6 +115,7 @@ class RuntimeTest(unittest.TestCase):
                 runtime = Driver(self.data)
                 persist_legacy_runtime(runtime)
                 runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+                enable_history(runtime)
                 now = datetime.fromisoformat(events[0]['slot'])
                 draft = runtime.draft(events[0]['token'], body, now=now)
                 capture = Path(self.temp.name) / 'captured-argv.json'
@@ -126,23 +132,33 @@ class RuntimeTest(unittest.TestCase):
         runtime = Driver(self.data)
         persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         first = datetime.fromisoformat(events[0]['slot'])
-        engine.tick(now=first, binding=BINDING)
-        receipt = dict(self.receipt(events[0]), message_id='100', cursor='100')
-        engine.acknowledge(receipt, now=first)
+        opener = runtime.draft(events[0]['token'], 'Synthetic opener', now=first)
+        import sys
+        sender = Path(self.temp.name) / 'fictional-observe-sender'
+        sender.write_text('#!' + sys.executable + '\nprint(\'{"success":true,"message_id":"100"}\')\n')
+        sender.chmod(0o700)
+        runtime.dispatch(opener['token'], opener['fence'], hermes=str(sender), now=first)
+        initial = dict(id='100', content=opener['body'], timestamp=first.isoformat(),
+                       author=dict(id='456', bot=True), attachments=[])
+        initial_pages = [dict(binding=BINDING, channel_id='123', before=None,
+                              observed_at=first.isoformat(), result=dict(messages=[initial]))]
+        runtime.confirm(opener['token'], opener['fence'], initial_pages, now=first,
+                        history_plan=history_request(runtime, 'confirm', opener['token'], opener['fence']))
         now = datetime.fromisoformat(events[1]['slot'])
         draft = runtime.draft(events[1]['token'], 'Synthetic followup', now=now)
         self.assertTrue(hasattr(runtime, 'observe'), 'history-derived engagement missing')
         anchor = dict(id='100', content='Synthetic opener', timestamp=first.isoformat(), author=dict(id='456', bot=True), attachments=[])
         page = dict(binding=BINDING, channel_id='123', observed_at=now.isoformat(), before=None, result=dict(messages=[anchor]))
-        evidence = runtime.observe(draft['token'], draft['fence'], [page], now=now)
+        evidence = runtime.observe(draft['token'], draft['fence'], [page], now=now, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         self.assertFalse(evidence['engaged'])
         with self.assertRaises(ValueError):
-            runtime.observe(draft['token'], draft['fence'], [], now=now)
-        self.assertIsNone(runtime.row(draft['token'], draft['fence'])['evidence'], 'failed refresh must invalidate earlier evidence')
+            runtime.observe(draft['token'], draft['fence'], [], now=now, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
+        self.assertEqual(runtime.row(draft['token'], draft['fence'])['evidence'], evidence, 'rejected refresh must preserve the prior authorized audit')
         reply = dict(id='101', content='', timestamp=now.isoformat(), author=dict(id=BINDING['owner'], bot=False), attachments=[dict(filename='synthetic.txt')])
         page['result']['messages'].insert(0, reply)
-        evidence = runtime.observe(draft['token'], draft['fence'], [page], now=now)
+        evidence = runtime.observe(draft['token'], draft['fence'], [page], now=now, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         self.assertTrue(evidence['engaged'])
         self.assertEqual(engine.status()['episode']['stopped'], 'owner-engaged')
         self.assertEqual(self.cli('show', '1')['status'], 'open')
@@ -173,6 +189,7 @@ class RuntimeTest(unittest.TestCase):
         engine, events = self.prepare()
         persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic opener', now=now)
         engine.tick(binding=BINDING, now=now, expected_token=draft['token'])
@@ -239,6 +256,7 @@ class RuntimeTest(unittest.TestCase):
         engine, events = self.prepare()
         persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic uncertain opener', now=now)
         sent = runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent/synthetic-hermes', now=now)
@@ -246,7 +264,7 @@ class RuntimeTest(unittest.TestCase):
         tomorrow = datetime(2030, 1, 8, 8, tzinfo=timezone.utc)
         engine.prepare(binding=BINDING, now=tomorrow)
         page = dict(binding=BINDING, channel_id='123', before=None, observed_at=tomorrow.isoformat(), result=dict(messages=[dict(id='100', content=draft['body'], timestamp=now.isoformat(), author=dict(id='456', bot=True), attachments=[])]))
-        receipt = runtime.confirm(draft['token'], draft['fence'], [page], now=tomorrow, message_id='100')
+        receipt = runtime.confirm(draft['token'], draft['fence'], [page], now=tomorrow, message_id='100', history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id='100'))
         self.assertEqual(receipt['message_id'], '100')
         self.assertEqual(runtime.row(draft['token'], draft['fence'])['state'], 'confirmed')
         self.assertEqual(engine.status()['episode']['day'], '2030-01-08')
@@ -258,6 +276,7 @@ class RuntimeTest(unittest.TestCase):
         runtime = Driver(self.data)
         persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic lost response', now=now)
         runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent/synthetic-hermes', now=now)
@@ -270,15 +289,15 @@ class RuntimeTest(unittest.TestCase):
     def test_confirmed_receipt_is_immutable_after_rollover_and_restart(self):
         from task_coach.driver import Driver
         runtime, engine, draft, now, message, page = self.uncertain_fixture()
-        receipt = runtime.confirm(draft['token'], draft['fence'], [page([message(100)])], now=now, message_id='100')
+        receipt = runtime.confirm(draft['token'], draft['fence'], [page([message(100)])], now=now, message_id='100', history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id='100'))
         tomorrow = now + timedelta(days=1)
         engine.prepare(binding=BINDING, now=tomorrow)
         runtime = Driver(self.data)
         with self.assertRaisesRegex(ValueError, 'conflicting'):
-            runtime.confirm(draft['token'], draft['fence'], [page([message(101)], observed_at=tomorrow.isoformat())], now=tomorrow, message_id='101')
+            runtime.confirm(draft['token'], draft['fence'], [page([message(101)], observed_at=tomorrow.isoformat())], now=tomorrow, message_id='101', history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id='101'))
         self.assertEqual(runtime.row(draft['token'], draft['fence'])['receipt'], receipt)
-        self.assertEqual(runtime.confirm(draft['token'], draft['fence'], [], now=tomorrow, message_id='100'), receipt)
-        self.assertEqual(runtime.confirm(draft['token'], draft['fence'], [], now=tomorrow), receipt)
+        self.assertEqual(runtime.confirm(draft['token'], draft['fence'], [page([message(100)], observed_at=tomorrow.isoformat())], now=tomorrow, message_id='100', history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id='100')), receipt)
+        self.assertEqual(runtime.confirm(draft['token'], draft['fence'], [page([message(100)], observed_at=tomorrow.isoformat())], now=tomorrow, history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'])), receipt)
         self.assertEqual(engine.status()['deliveries'], 0)
 
     def test_known_candidate_rejects_conflicting_operator_id(self):
@@ -286,8 +305,8 @@ class RuntimeTest(unittest.TestCase):
         with runtime.transaction() as state:
             state['outbox'][draft['token']]['candidate_id'] = '100'
         with self.assertRaisesRegex(ValueError, 'conflicting'):
-            runtime.confirm(draft['token'], draft['fence'], [page([message(100)])], now=now, message_id='101')
-        receipt = runtime.confirm(draft['token'], draft['fence'], [page([message(101), message(100)])], now=now, message_id='100')
+            runtime.confirm(draft['token'], draft['fence'], [page([message(100)])], now=now, message_id='101', history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id='101'))
+        receipt = runtime.confirm(draft['token'], draft['fence'], [page([message(101), message(100)])], now=now, message_id='100', history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id='100'))
         self.assertEqual(receipt['message_id'], '100')
         self.assertEqual(engine.status()['deliveries'], 1)
 
@@ -297,41 +316,41 @@ class RuntimeTest(unittest.TestCase):
         pages = [page([message(101), message(100)])]
         for candidate in ('101', '100'):
             with self.subTest(candidate=candidate), self.assertRaisesRegex(ValueError, 'ambiguous'):
-                Driver(self.data).confirm(draft['token'], draft['fence'], pages, now=now, message_id=candidate)
+                Driver(self.data).confirm(draft['token'], draft['fence'], pages, now=now, message_id=candidate, history_plan=history_request(Driver(self.data), 'confirm', draft['token'], draft['fence'], message_id=candidate))
         self.assertEqual(runtime.row(draft['token'], draft['fence'])['state'], 'sending')
         self.assertEqual(engine.status()['deliveries'], 0)
 
     def test_lost_response_requires_coverage_before_attempt_not_only_candidate(self):
         from task_coach.driver import Driver
         runtime, engine, draft, now, message, page = self.uncertain_fixture()
-        batch = [message(200)] + [message(k, content='Unrelated fictional post') for k in range(199, 100, -1)]
+        batch = [message(200)] + [message(k, content='Unrelated fictional post') for k in range(199, 175, -1)]
         with self.assertRaisesRegex(ValueError, 'coverage'):
-            runtime.confirm(draft['token'], draft['fence'], [page(batch)], now=now, message_id='200')
+            runtime.confirm(draft['token'], draft['fence'], [page(batch)], now=now, message_id='200', history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id='200'))
         older = message(100, timestamp=(now-timedelta(seconds=1)).isoformat())
-        pages = [page(batch), page([older], before='101')]
-        receipt = Driver(self.data).confirm(draft['token'], draft['fence'], pages, now=now, message_id='200')
+        pages = [page(batch[:-1] + [older])]
+        receipt = Driver(self.data).confirm(draft['token'], draft['fence'], pages, now=now, message_id='200', history_plan=history_request(Driver(self.data), 'confirm', draft['token'], draft['fence'], message_id='200'))
         self.assertEqual(receipt['message_id'], '200')
         self.assertEqual(engine.status()['deliveries'], 1)
 
-    def test_lost_response_complete_empty_terminal_page_and_idempotent_restart(self):
+    def test_lost_response_complete_short_page_and_idempotent_restart(self):
         from task_coach.driver import Driver
         runtime, engine, draft, now, message, page = self.uncertain_fixture()
-        batch = [message(200)] + [message(k, content='Unrelated fictional post') for k in range(199, 100, -1)]
-        pages = [page(batch), page([], before='101')]
-        receipt = Driver(self.data).confirm(draft['token'], draft['fence'], pages, now=now, message_id='200')
+        batch = [message(200)] + [message(k, content='Unrelated fictional post') for k in range(199, 175, -1)]
+        pages = [page(batch[:24])]
+        receipt = Driver(self.data).confirm(draft['token'], draft['fence'], pages, now=now, message_id='200', history_plan=history_request(Driver(self.data), 'confirm', draft['token'], draft['fence'], message_id='200'))
         self.assertEqual(receipt['message_id'], '200')
-        self.assertEqual(Driver(self.data).confirm(draft['token'], draft['fence'], [], now=now, message_id='200'), receipt)
+        self.assertEqual(Driver(self.data).confirm(draft['token'], draft['fence'], pages, now=now, message_id='200', history_plan=history_request(Driver(self.data), 'confirm', draft['token'], draft['fence'], message_id='200')), receipt)
         self.assertEqual(engine.status()['deliveries'], 1)
 
-    def test_lost_response_validates_raw_tail_and_all_paginated_matches(self):
+    def test_lost_response_validates_raw_tail_and_all_bounded_matches(self):
         from task_coach.driver import Driver
         import copy
         runtime, engine, draft, now, message, page = self.uncertain_fixture()
-        batch = [message(200)] + [message(k, content='Unrelated fictional post') for k in range(199, 100, -1)]
-        pages = [page(batch), page([message(100)], before='101')]
+        batch = [message(200)] + [message(k, content='Unrelated fictional post') for k in range(199, 175, -1)]
+        pages = [page(batch[:23] + [message(100)])]
         for candidate in ('200', '100'):
             with self.subTest(candidate=candidate), self.assertRaisesRegex(ValueError, 'ambiguous'):
-                Driver(self.data).confirm(draft['token'], draft['fence'], pages, now=now, message_id=candidate)
+                Driver(self.data).confirm(draft['token'], draft['fence'], pages, now=now, message_id=candidate, history_plan=history_request(Driver(self.data), 'confirm', draft['token'], draft['fence'], message_id=candidate))
         for mutation in ('count', 'id', 'timestamp', 'route', 'pagination', 'stale'):
             bad = copy.deepcopy(pages)
             tail = bad[-1]
@@ -348,28 +367,39 @@ class RuntimeTest(unittest.TestCase):
             else:
                 tail['observed_at'] = (now-timedelta(seconds=61)).isoformat()
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
-                runtime.confirm(draft['token'], draft['fence'], bad, now=now, message_id='200')
+                runtime.confirm(draft['token'], draft['fence'], bad, now=now, message_id='200', history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id='200'))
         # A full final page is sufficient only when it reaches strictly before
         # the attempt; equal timestamps can still conceal another match.
         batch[-1]['timestamp'] = (now-timedelta(seconds=1)).isoformat()
-        receipt = Driver(self.data).confirm(draft['token'], draft['fence'], [page(batch)], now=now, message_id='200')
+        receipt = Driver(self.data).confirm(draft['token'], draft['fence'], [page(batch)], now=now, message_id='200', history_plan=history_request(Driver(self.data), 'confirm', draft['token'], draft['fence'], message_id='200'))
         self.assertEqual(receipt['message_id'], '200')
         self.assertEqual(engine.status()['deliveries'], 1)
 
     def test_confirmation_race_cannot_replace_durable_receipt(self):
         from task_coach.driver import Driver
-        from unittest.mock import patch
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
         runtime, engine, draft, now, message, page = self.uncertain_fixture()
         tomorrow = now + timedelta(days=1)
         engine.prepare(binding=BINDING, now=tomorrow)
-        original_status = runtime.coach.status
-        def competing_confirmation():
-            Driver(self.data).confirm(draft['token'], draft['fence'], [page([message(100)], observed_at=tomorrow.isoformat())], now=tomorrow, message_id='100')
-            return original_status()
-        with patch.object(runtime.coach, 'status', side_effect=competing_confirmation):
-            with self.assertRaisesRegex(ValueError, 'conflicting'):
-                runtime.confirm(draft['token'], draft['fence'], [page([message(101)], observed_at=tomorrow.isoformat())], now=tomorrow, message_id='101')
-        self.assertEqual(runtime.row(draft['token'], draft['fence'])['receipt']['message_id'], '100')
+        plans = {key: history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id=key)
+                 for key in ('100', '101')}
+        barrier = threading.Barrier(2)
+        def confirm(key):
+            barrier.wait(timeout=5)
+            try:
+                return Driver(self.data).confirm(draft['token'], draft['fence'],
+                    [page([message(int(key))], observed_at=tomorrow.isoformat())],
+                    now=tomorrow, message_id=key, history_plan=plans[key])
+            except ValueError as error:
+                return str(error)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(confirm, ('100', '101')))
+        receipts = [result for result in results if isinstance(result, dict)]
+        self.assertEqual(len(receipts), 1, results)
+        self.assertIn('conflicting', next(result for result in results if isinstance(result, str)))
+        self.assertEqual(Driver(self.data).row(draft['token'], draft['fence'])['receipt'], receipts[0])
+
 
     def test_sender_errors_remain_nonretryable_across_restart(self):
         from task_coach.driver import Driver
@@ -382,6 +412,7 @@ class RuntimeTest(unittest.TestCase):
                 runtime = Driver(self.data)
                 persist_legacy_runtime(runtime)
                 runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+                enable_history(runtime)
                 now = datetime.fromisoformat(events[0]['slot'])
                 draft = runtime.draft(events[0]['token'], 'Synthetic failure', now=now)
                 fake = Path(self.temp.name) / 'synthetic-broken-hermes'
@@ -401,6 +432,7 @@ class RuntimeTest(unittest.TestCase):
         runtime = Driver(self.data)
         persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         history = []
         for index in (0, 1):
             now = datetime.fromisoformat(events[index]['slot'])
@@ -409,7 +441,7 @@ class RuntimeTest(unittest.TestCase):
             def page(messages):
                 return dict(binding=BINDING, channel_id='123', before=None, observed_at=now.isoformat(), result=dict(messages=messages))
             if index:
-                runtime.observe(token, draft['fence'], [page(history)], now=now)
+                runtime.observe(token, draft['fence'], [page(history)], now=now, history_plan=history_request(runtime, 'observe', token, draft['fence']))
             fake = Path(self.temp.name) / 'synthetic-sender'
             fake.write_text('#!'+sys.executable+'\nimport json\nprint(json.dumps({"success":True,"message_id":'+repr(str(100+index))+'}))\n')
             fake.chmod(0o700)
@@ -418,7 +450,7 @@ class RuntimeTest(unittest.TestCase):
             if index:
                 history.insert(0, dict(id='102', content='Synthetic owner reply', timestamp=now.isoformat(), author=dict(id=BINDING['owner'], bot=False), attachments=[]))
             runtime = Driver(self.data)  # real restart, durable outbox and fences
-            runtime.confirm(token, draft['fence'], [page(history)], now=now)
+            runtime.confirm(token, draft['fence'], [page(history)], now=now, history_plan=history_request(runtime, 'confirm', token, draft['fence']))
         self.assertEqual(engine.status()['deliveries'], 2)
         self.assertEqual(engine.status()['episode']['stopped'], 'owner-engaged', 'readback owner reply must stop immediately')
         self.assertFalse(runtime.preflight(now=datetime.fromisoformat(events[2]['slot']))['wakeAgent'])
@@ -431,8 +463,9 @@ class RuntimeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'binding.*channel'):
             persist_legacy_runtime(runtime)
             runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:999', channel_id='999', bot_id='456'), confirm=True)
+            enable_history(runtime)
 
-    def test_history_validates_pagination_route_owner_and_declared_totals(self):
+    def test_history_validates_single_page_route_owner_and_declared_totals(self):
         from task_coach.driver import validate_pages
         import copy
         now = datetime(2030, 1, 7, 12, tzinfo=timezone.utc)
@@ -447,9 +480,11 @@ class RuntimeTest(unittest.TestCase):
         for changed in (dict(base, channel_id='999'), dict(base, binding=dict(BINDING, owner='wrong')), dict(base, observed_at=(now-timedelta(seconds=61)).isoformat()), dict(base, before='200')):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 validate_pages([changed], route, '100', now)
-        latest = dict(base, result=dict(messages=[message(k) for k in range(200, 100, -1)], count=100))
-        older = dict(base, before='101')
-        self.assertEqual(len(validate_pages([latest, older], route, '100', now)), 101)
+        latest = dict(base, result=dict(messages=[message(k) for k in range(124, 99, -1)], count=25))
+        older = dict(base, before='100')
+        self.assertEqual(len(validate_pages([latest], route, '100', now)), 25)
+        with self.assertRaisesRegex(ValueError, 'exactly one page'):
+            validate_pages([latest, older], route, '100', now)
         with self.assertRaises(ValueError):
             validate_pages([latest, dict(older, before='102')], route, '100', now)
         with self.assertRaises(ValueError):
@@ -462,6 +497,7 @@ class RuntimeTest(unittest.TestCase):
         runtime = Driver(self.data)
         persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic draft', now=now)
         path = self.data / 'outbox.sqlite3'
@@ -481,12 +517,13 @@ class RuntimeTest(unittest.TestCase):
         engine, events = self.prepare()
         persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic delayed delivery', now=now)
         runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent/synthetic-hermes', now=now)
         later = datetime.fromisoformat(events[0]['expires']) + timedelta(seconds=1)
         page = dict(binding=BINDING, channel_id='123', before=None, observed_at=later.isoformat(), result=dict(messages=[dict(id='100', content=draft['body'], timestamp=later.isoformat(), author=dict(id='456', bot=True), attachments=[])]))
-        runtime.confirm(draft['token'], draft['fence'], [page], now=later, message_id='100')
+        runtime.confirm(draft['token'], draft['fence'], [page], now=later, message_id='100', history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence'], message_id='100'))
         self.assertEqual(engine.status()['deliveries'], 1)
         self.assertEqual(engine.status()['episode']['stopped'], 'late-reconciled')
         self.assertFalse(runtime.preflight(now=later)['wakeAgent'])

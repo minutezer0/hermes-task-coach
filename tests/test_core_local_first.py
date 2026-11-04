@@ -1,4 +1,5 @@
 """Local-first fixtures; no installed skill or real transport is used."""
+from test_core_history_fixtures import enable_history, history_request
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +46,7 @@ class LocalFirstTest(unittest.TestCase):
         self.cli('setup', '--update', '--max-tasks-per-window', '2')
         self.cli('add', 'Fictional B')
         runtime = self.runtime()
+        enable_history(runtime)
         runtime.preflight(now='2030-01-07T08:00:00Z')
         root = runtime.coach.status()['episode']
         history, drafts = [], []
@@ -56,18 +58,19 @@ class LocalFirstTest(unittest.TestCase):
             drafts.append(draft)
         now = root['next_tasks'][0]['events'][0]['slot']
         history.insert(0, ClarificationTest.message(self, '200', now))
-        runtime.confirm(drafts[0]['token'], drafts[0]['fence'], ClarificationTest.pages(self, history, now), now=now)
-        result = runtime.engagement(BINDING, ClarificationTest.pages(self, history, now), now=now)
+        runtime.confirm(drafts[0]['token'], drafts[0]['fence'], ClarificationTest.pages(self, history, now), now=now, history_plan=history_request(runtime, 'confirm', drafts[0]['token'], drafts[0]['fence']))
+        result = runtime.engagement(BINDING, ClarificationTest.pages(self, history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         self.assertFalse(result['engaged'])
         self.assertEqual(result['error'], 'ambiguous-engagement')
         self.assertFalse(runtime.status().get('clarifications'), 'new local-first ambiguity should ask conversationally, not install a hold')
         history[0]['message_reference'] = None
-        result = runtime.engagement(BINDING, ClarificationTest.pages(self, history, now), now=now)
+        result = runtime.engagement(BINDING, ClarificationTest.pages(self, history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         self.assertFalse(result['engaged'], 'known unthreaded is not explicit task selection')
 
     def test_optional_observe_verifies_accepted_anchor_and_scopes_reply(self):
         from datetime import timedelta
         runtime = self.runtime()
+        enable_history(runtime)
         runtime.preflight(now='2030-01-07T08:00:00Z')
         events = runtime.coach.status()['episode']['events']
         draft = runtime.draft(events[0]['token'], 'Fictional opener', now=events[0]['slot'])
@@ -77,7 +80,7 @@ class LocalFirstTest(unittest.TestCase):
         messages = [dict(id='200', content='skip for now', timestamp=events[1]['slot'], author=dict(id=BINDING['owner'], bot=False), attachments=[]),
                     dict(id='100', content='Fictional opener', timestamp=anchor_time, author=dict(id='456', bot=True), attachments=[])]
         pages = [dict(binding=BINDING, channel_id='123', before=None, observed_at=events[1]['slot'], result=dict(messages=messages))]
-        evidence = runtime.observe(events[1]['token'], followup['fence'], pages, now=events[1]['slot'])
+        evidence = runtime.observe(events[1]['token'], followup['fence'], pages, now=events[1]['slot'], history_plan=history_request(runtime, 'observe', events[1]['token'], followup['fence']))
         self.assertTrue(evidence['engaged'])
         self.assertEqual(runtime.row(events[0]['token'], draft['fence'])['state'], 'confirmed')
         self.assertEqual(runtime.coach.status()['episode']['stopped'], 'owner-engaged')
@@ -104,7 +107,7 @@ class LocalFirstTest(unittest.TestCase):
         helper.cli = self.cli
         runtime, history, drafts, now = helper.fixture()
         history.insert(0, helper.message('200', now))
-        result = runtime.engagement(BINDING, helper.pages(history, now), now=now)
+        result = runtime.engagement(BINDING, helper.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         self.assertEqual(result['error'], 'ambiguous-engagement')
         before = runtime.status()
         runtime.upgrade_local_first(confirm=True, now=now)
@@ -123,7 +126,7 @@ class LocalFirstTest(unittest.TestCase):
         helper.data, helper.cli = self.data, self.cli
         runtime, history, drafts, now = helper.fixture()
         history.insert(0, helper.message('200', now))
-        runtime.engagement(BINDING, helper.pages(history, now), now=now)
+        runtime.engagement(BINDING, helper.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         with runtime.transaction() as state:
             clarification.activity(state, [helper.message('201', now)])
         runtime.upgrade_local_first(confirm=True, now=now)
@@ -355,6 +358,7 @@ class LocalFirstTest(unittest.TestCase):
         self.cli('setup', '--update', '--max-tasks-per-window', '2')
         self.cli('add', 'Fictional B')
         runtime = self.runtime()
+        enable_history(runtime)
         runtime.preflight(now='2030-01-07T08:00:00Z')
         root = runtime.coach.status()['episode']
         history, drafts = [], []
@@ -364,7 +368,7 @@ class LocalFirstTest(unittest.TestCase):
             draft = runtime.draft(event['token'], 'Fictional ' + str(n), now=event['slot'])
             runtime.dispatch(event['token'], draft['fence'], hermes=sender, now=event['slot'])
             history.insert(0, ClarificationTest.message(self, str(100+n), event['slot'], draft['body'], bot=True))
-            runtime.confirm(event['token'], draft['fence'], ClarificationTest.pages(self, history, event['slot']), now=event['slot'])
+            runtime.confirm(event['token'], draft['fence'], ClarificationTest.pages(self, history, event['slot']), now=event['slot'], history_plan=history_request(runtime, 'confirm', event['token'], draft['fence']))
             drafts.append(draft)
         now = history[0]['timestamp']
         first = drafts[0]
@@ -374,7 +378,7 @@ class LocalFirstTest(unittest.TestCase):
         reply['message_reference'] = {'message_id': '101', 'channel_id': '123'}
         history.insert(0, reply)
         before = runtime.coach.status()
-        result = runtime.engagement(BINDING, ClarificationTest.pages(self, history, now), now=now)
+        result = runtime.engagement(BINDING, ClarificationTest.pages(self, history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         self.assertFalse(result['engaged'])
         self.assertEqual(runtime.coach.status(), before)
 
@@ -384,6 +388,7 @@ class LocalFirstTest(unittest.TestCase):
         self.cli('setup', '--update', '--max-tasks-per-window', '2')
         self.cli('add', 'Fictional B')
         runtime = self.runtime()
+        enable_history(runtime)
         runtime.preflight(now='2030-01-07T08:00:00Z')
         root = runtime.coach.status()['episode']
         history, drafts = [], []
@@ -393,14 +398,14 @@ class LocalFirstTest(unittest.TestCase):
             draft = runtime.draft(event['token'], 'Fictional ' + str(n), now=event['slot'])
             runtime.dispatch(event['token'], draft['fence'], hermes=sender, now=event['slot'])
             history.insert(0, ClarificationTest.message(self, str(100+n), event['slot'], draft['body'], bot=True))
-            runtime.confirm(event['token'], draft['fence'], ClarificationTest.pages(self, history, event['slot']), now=event['slot'])
+            runtime.confirm(event['token'], draft['fence'], ClarificationTest.pages(self, history, event['slot']), now=event['slot'], history_plan=history_request(runtime, 'confirm', event['token'], draft['fence']))
             drafts.append(draft)
         now = history[0]['timestamp']
         reply = ClarificationTest.message(self, '200', now)
         reply['message_reference'] = {'message_id': '100', 'channel_id': '123'}
         history.insert(0, reply)
         pages = ClarificationTest.pages(self, history, now)
-        first = runtime.engagement(BINDING, pages, now=now)
+        first = runtime.engagement(BINDING, pages, now=now, history_plan=history_request(runtime, 'engagement'))
         self.assertTrue(first['engaged'])
         before = runtime.coach.status()
         b = drafts[1]
@@ -408,14 +413,14 @@ class LocalFirstTest(unittest.TestCase):
             Driver(self.data).record_engagement(binding=BINDING, owner=BINDING['owner'], message_id='200',
                 event_token=b['token'], task_id=b['task']['id'], cycle_id=b['task'].get('cycle_id'), intent='engaged', now=now)
         self.assertEqual(runtime.coach.status(), before)
-        self.assertEqual(runtime.engagement(BINDING, pages, now=now), first)
+        self.assertEqual(runtime.engagement(BINDING, pages, now=now, history_plan=history_request(runtime, 'engagement')), first)
         self.assertEqual(runtime.status()['engagements']['200']['result']['provenance'], 'captured-owner-history')
         a = drafts[0]
         same = dict(binding=BINDING, owner=BINDING['owner'], message_id='200', event_token=a['token'],
                     task_id=a['task']['id'], cycle_id=a['task'].get('cycle_id'), intent='engaged', now=now)
         self.assertEqual(runtime.record_engagement(**same), runtime.status()['engagements']['200']['result'])
         reply['message_reference']['message_id'] = '101'
-        conflicting = runtime.engagement(BINDING, ClarificationTest.pages(self, history, now), now=now)
+        conflicting = runtime.engagement(BINDING, ClarificationTest.pages(self, history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         self.assertFalse(conflicting['engaged'])
         self.assertEqual(runtime.coach.status(), before)
 
@@ -444,7 +449,9 @@ class LocalFirstTest(unittest.TestCase):
         runtime = self.runtime()
         plan = runtime.native_plan('/fictional/profile', python='/usr/bin/python3', helper='/fictional/skill/scripts/task-coach.py', hermes='/fictional/bin/hermes')
         prompt = plan['cron_argv'][4]
-        self.assertIn('OPTIONAL', prompt)
+        self.assertIn('Never fetch Discord history in routine cron', prompt)
+        self.assertIn('openers AND followups without history', prompt)
+        self.assertIn('Optional history failure', prompt)
         self.assertIn('[CRON_FAILURE]', prompt)
         self.assertIn('hosted connector', prompt)
         self.assertIn('record-engagement', plan['inbound_instruction'])
@@ -523,6 +530,7 @@ class LocalFirstTest(unittest.TestCase):
         self.cli('setup', '--update', '--max-tasks-per-window', '2', '--min-followup-interval', '30', '--max-followup-interval', '30')
         self.cli('add', 'Fictional B')
         runtime = self.runtime()
+        enable_history(runtime)
         runtime.coach.rng = __import__('random').Random(1)
         runtime.preflight(now='2030-01-07T08:00:00Z')
         root = runtime.coach.status()['episode']
@@ -532,25 +540,26 @@ class LocalFirstTest(unittest.TestCase):
             draft = runtime.draft(event['token'], 'Fictional ' + str(n), now=event['slot'])
             runtime.dispatch(event['token'], draft['fence'], hermes=self.sender(), now=event['slot'])
             history.insert(0, ClarificationTest.message(self, str(100+n), event['slot'], draft['body'], bot=True))
-            runtime.confirm(event['token'], draft['fence'], ClarificationTest.pages(self, history, event['slot']), now=event['slot'])
+            runtime.confirm(event['token'], draft['fence'], ClarificationTest.pages(self, history, event['slot']), now=event['slot'], history_plan=history_request(runtime, 'confirm', event['token'], draft['fence']))
         followup = root['next_tasks'][0]['events'][1]
         history.insert(0, ClarificationTest.message(self, '200', followup['slot']))
-        result = runtime.engagement(BINDING, ClarificationTest.pages(self, history, followup['slot']), now=followup['slot'])
+        result = runtime.engagement(BINDING, ClarificationTest.pages(self, history, followup['slot']), now=followup['slot'], history_plan=history_request(runtime, 'engagement'))
         self.assertEqual(result['error'], 'ambiguous-engagement')
         self.assertTrue(runtime.preflight(now=followup['slot'])['wakeAgent'])
 
     def test_optional_confirm_enriches_without_changing_acceptance(self):
         runtime = self.runtime()
+        enable_history(runtime)
         runtime.preflight(now='2030-01-07T08:00:00Z')
         event = runtime.coach.status()['episode']['events'][0]
         draft = runtime.draft(event['token'], 'Fictional opener', now=event['slot'])
         sent = runtime.dispatch(event['token'], draft['fence'], hermes=self.sender(), now=event['slot'])
         with self.assertRaises(ValueError):
-            runtime.confirm(event['token'], draft['fence'], [], now=event['slot'])
+            runtime.confirm(event['token'], draft['fence'], [], now=event['slot'], history_plan=history_request(runtime, 'confirm', event['token'], draft['fence']))
         self.assertEqual(runtime.row(event['token'], draft['fence']), sent)
         page = dict(binding=BINDING, channel_id='123', observed_at=event['slot'], before=None,
                     result=dict(messages=[dict(id='100', content='Fictional opener', timestamp=event['slot'], author=dict(id='456', bot=True), attachments=[])]))
-        receipt = runtime.confirm(event['token'], draft['fence'], [page], now=event['slot'])
+        receipt = runtime.confirm(event['token'], draft['fence'], [page], now=event['slot'], history_plan=history_request(runtime, 'confirm', event['token'], draft['fence']))
         self.assertEqual(receipt['message_id'], '100')
         verified = runtime.row(event['token'], draft['fence'])
         self.assertEqual(verified['state'], 'confirmed')

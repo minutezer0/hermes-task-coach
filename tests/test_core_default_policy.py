@@ -1,4 +1,5 @@
 """Automatic policy adoption uses synthetic persisted rc.4 stores, never live data."""
+from test_core_history_fixtures import enable_history, history_request
 import json
 import sqlite3
 from contextlib import closing
@@ -106,7 +107,7 @@ class DefaultPolicyTest(__import__('unittest').TestCase):
         helper.data, helper.cli = self.data, self.cli
         runtime, history, drafts, now = helper.fixture()
         history.insert(0, helper.message('200', now))
-        runtime.engagement(fixtures.BINDING, helper.pages(history, now), now=now)
+        runtime.engagement(fixtures.BINDING, helper.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         runtime.coach.stop(drafts[0]['token'], fixtures.BINDING)
         # Reconstruct rc.4's exact persisted runtime shape, not a future fresh store.
         with closing(sqlite3.connect(self.data / 'outbox.sqlite3')) as db:
@@ -149,13 +150,15 @@ class DefaultPolicyTest(__import__('unittest').TestCase):
                                    helper='/fictional/helper', hermes='/fictional/hermes')
         self.assertEqual(before, self.snapshot())
         # Before persisted adoption the legacy episode is still effective.
-        self.assertIn('fresh complete Discord history', plan['cron_argv'][4])
+        self.assertIn('preserved legacy episode retains its honest history gates', plan['cron_argv'][4])
+        self.assertIn('Never fetch Discord history in routine cron', plan['cron_argv'][4])
         self.assertIn('runtime capabilities', plan['cron_argv'][4])
-        self.assertIn('local_first:false', plan['inbound_instruction'])
+        self.assertIn('preserve legacy gates', plan['inbound_instruction'])
+        self.assertIn('With history OFF make no external history reads', plan['inbound_instruction'])
         (self.data / 'outbox.sqlite3').unlink()
         plan = runtime.native_plan('/fictional/profile', python='/usr/bin/python3',
                                    helper='/fictional/helper', hermes='/fictional/hermes')
-        self.assertIn('History/readback is OPTIONAL', plan['cron_argv'][4])
+        self.assertIn('openers AND followups without history', plan['cron_argv'][4])
         self.assertFalse((self.data / 'outbox.sqlite3').exists())
 
     def test_malformed_engine_refuses_without_any_writes(self):

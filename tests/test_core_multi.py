@@ -1,4 +1,5 @@
 """Multiple-window-task acceptance with fictional private stores only."""
+from test_core_history_fixtures import enable_history, history_request
 import json
 import unittest
 import test_core_coaching as fixtures
@@ -93,6 +94,7 @@ class MultipleTasksTest(unittest.TestCase):
         runtime = Driver(self.data)
         runtime.coach.rng = __import__('random').Random(1)
         runtime.configure(dict(binding=binding, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         runtime.preflight(now='2030-01-07T08:00:00Z')
         root = runtime.coach.status()['episode']
         tasks = [root] + root['next_tasks']
@@ -109,27 +111,27 @@ class MultipleTasksTest(unittest.TestCase):
                 if n and not index:
                     self.assertEqual(runtime.context(binding)['task_id'], tasks[0]['task_id'])
                 if index:
-                    runtime.observe(token, draft['fence'], page(now), now=now)
+                    runtime.observe(token, draft['fence'], page(now), now=now, history_plan=history_request(runtime, 'observe', token, draft['fence']))
                 sender.write_text('#!' + sys.executable + '\nprint(' + repr(json.dumps(dict(success=True, message_id=str(100+len(history))))) + ')\n')
                 sender.chmod(0o700)
                 sent = runtime.dispatch(token, draft['fence'], hermes=str(sender), now=now)
                 self.assertIn('candidate_id', sent, sent)
                 history.insert(0, dict(id=sent['candidate_id'], content=draft['body'], timestamp=now, author=dict(id='456', bot=True), attachments=[]))
                 runtime = Driver(self.data)
-                receipt = runtime.confirm(token, draft['fence'], page(now), now=now)
+                receipt = runtime.confirm(token, draft['fence'], page(now), now=now, history_plan=history_request(runtime, 'confirm', token, draft['fence']))
                 drafts.append((draft, receipt))
                 self.assertEqual(runtime.context(binding, reply_to_message_id=receipt['message_id'])['task_id'], sequence['task_id'])
                 if n:
                     self.assertIsNone(runtime.context(binding), 'multiple historical tasks require a trusted target')
                 if n:
                     old, old_receipt = drafts[0]
-                    self.assertEqual(runtime.confirm(old['token'], old['fence'], [], now=now), old_receipt)
+                    self.assertEqual(runtime.confirm(old['token'], old['fence'], page(now), now=now, history_plan=history_request(runtime, 'confirm', old['token'], old['fence'])), old_receipt)
                     runtime.coach.stop(old['token'], binding)
             now = sequence['events'][1]['slot']
             history.insert(0, dict(id=str(100+len(history)), content='Fictional owner reply', timestamp=now, author=dict(id=binding['owner'], bot=False), attachments=[]))
             pages = page(now)
             pages[0]['reply_targets'] = {history[0]['id']: drafts[-1][1]['message_id']}
-            self.assertTrue(runtime.engagement(binding, pages, now=now)['engaged'])
+            self.assertTrue(runtime.engagement(binding, pages, now=now, history_plan=history_request(runtime, 'engagement'))['engaged'])
         self.assertEqual(runtime.coach.status()['deliveries'], 4)
         self.assertEqual(self.cli('list')[0]['status'], 'open')
 
@@ -148,6 +150,7 @@ class MultipleTasksTest(unittest.TestCase):
         from test_core_driver import persist_legacy_runtime
         persist_legacy_runtime(runtime, binding=binding)
         runtime.configure(dict(binding=binding, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         runtime.preflight(now='2030-01-07T08:00:00Z')
         episode = runtime.coach.status()['episode']
         first = episode['events'][0]

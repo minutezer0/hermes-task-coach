@@ -1,4 +1,5 @@
 """Reference-aware routing using fictional stores and raw synthetic captures only."""
+from test_core_history_fixtures import enable_history, history_request, history_cli
 from datetime import timedelta
 import json
 import random
@@ -23,6 +24,7 @@ class ReplyRoutingTest(unittest.TestCase):
         persist_legacy_runtime(runtime, now=start)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123',
                                channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         runtime.preflight(now=start)
         root = runtime.coach.status()['episode']
         self.sequences = [root] + root['next_tasks']
@@ -39,7 +41,7 @@ class ReplyRoutingTest(unittest.TestCase):
         now = event['slot']
         draft = runtime.draft(event['token'], 'Fictional check-in ' + key, now=now)
         if draft['previous']:
-            runtime.observe(draft['token'], draft['fence'], self.page(now), now=now)
+            runtime.observe(draft['token'], draft['fence'], self.page(now), now=now, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         sender = self.data.parent / 'fictional-sender'
         sender.write_text('#!' + sys.executable + '\nprint(' + repr(json.dumps(dict(success=True, message_id=key))) + ')\n')
         sender.chmod(0o700)
@@ -55,7 +57,7 @@ class ReplyRoutingTest(unittest.TestCase):
                 message.update(edited_timestamp=None, reactions=[], pinned=False)
         if trusted_reply:
             pages[0]['reply_targets'] = {'300': reply}
-        runtime.confirm(draft['token'], draft['fence'], pages, now=now)
+        runtime.confirm(draft['token'], draft['fence'], pages, now=now, history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence']))
         return draft
 
     def add_reply(self, key, target, now):
@@ -78,7 +80,7 @@ class ReplyRoutingTest(unittest.TestCase):
         for message in self.history:
             message.pop('message_reference', None)
             message.update(edited_timestamp=None, reactions=[], pinned=False)
-        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'])
+        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'], history_plan=history_request(runtime, 'engagement'))
         self.assertFalse(result['engaged'])
         self.assertIsNone(result['context'])
         self.assertEqual(result['error'], 'ambiguous-engagement')
@@ -100,7 +102,7 @@ class ReplyRoutingTest(unittest.TestCase):
         followup = self.sequences[1]['events'][1]
         draft = runtime.draft(followup['token'], 'B followup', now=followup['slot'])
         self.add_reply('300', '100', followup['slot'])
-        evidence = runtime.observe(draft['token'], draft['fence'], self.page(followup['slot']), now=followup['slot'])
+        evidence = runtime.observe(draft['token'], draft['fence'], self.page(followup['slot']), now=followup['slot'], history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         self.assertFalse(evidence['engaged'])
         self.assertTrue(evidence['complete'])
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
@@ -121,7 +123,7 @@ class ReplyRoutingTest(unittest.TestCase):
         runtime, first, second = self.open_b()
         self.assertIsNone(runtime.context(BINDING, reply_to_message_id='999'))
         self.add_reply('300', '999', second['slot'])
-        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'])
+        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'], history_plan=history_request(runtime, 'engagement'))
         self.assertFalse(result['engaged'])
         self.assertIsNone(result['context'])
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
@@ -136,7 +138,7 @@ class ReplyRoutingTest(unittest.TestCase):
             message.update(edited_timestamp=None, reactions=[], pinned=False)
         pages = self.page(followup['slot'])
         pages[0]['reply_targets'] = {'300': '100'}
-        evidence = runtime.observe(draft['token'], draft['fence'], pages, now=followup['slot'])
+        evidence = runtime.observe(draft['token'], draft['fence'], pages, now=followup['slot'], history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         self.assertTrue(evidence['complete'])
         self.assertFalse(evidence['engaged'])
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
@@ -155,8 +157,8 @@ class ReplyRoutingTest(unittest.TestCase):
         path.write_text(json.dumps(self.page(second['slot'])))
         with patch('task_coach.driver.datetime') as clock:
             clock.now.return_value = datetime.fromisoformat(second['slot'])
-            result = self.cli('runtime', 'engagement', '--binding', json.dumps(BINDING),
-                              '--pages-file', str(path), '--inbound-message-id', '300', '--reply-to-message-id', '100')
+            result = self.cli('runtime', *history_cli(runtime, 'engagement', '--binding', json.dumps(BINDING),
+                              '--pages-file', str(path), '--inbound-message-id', '300', '--reply-to-message-id', '100'))
         self.assertTrue(result['engaged'])
         self.assertEqual(result['context']['event_token'], first['token'])
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
@@ -165,7 +167,7 @@ class ReplyRoutingTest(unittest.TestCase):
         runtime, first, second = self.open_b()
         self.add_reply('300', '100', second['slot'])
         self.add_reply('301', '150', second['slot'])
-        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'])
+        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'], history_plan=history_request(runtime, 'engagement'))
         self.assertFalse(result['engaged'])
         self.assertIsNone(result['context'])
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
@@ -176,7 +178,7 @@ class ReplyRoutingTest(unittest.TestCase):
         draft = runtime.draft(followup['token'], 'B followup', now=followup['slot'])
         self.add_reply('300', None, followup['slot'])
         self.history[0].pop('message_reference')
-        evidence = runtime.observe(draft['token'], draft['fence'], self.page(followup['slot']), now=followup['slot'])
+        evidence = runtime.observe(draft['token'], draft['fence'], self.page(followup['slot']), now=followup['slot'], history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         self.assertFalse(evidence['engaged'])
         self.assertFalse(evidence['complete'])
         self.assertEqual(evidence['error'], 'ambiguous-engagement')
@@ -214,7 +216,7 @@ class ReplyRoutingTest(unittest.TestCase):
         followup = self.sequences[1]['events'][1]
         draft = runtime.draft(followup['token'], 'Fictional check-in 250', now=followup['slot'])
         self.add_reply('240', '150', followup['slot'])
-        evidence = runtime.observe(draft['token'], draft['fence'], self.page(followup['slot']), now=followup['slot'])
+        evidence = runtime.observe(draft['token'], draft['fence'], self.page(followup['slot']), now=followup['slot'], history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         self.assertTrue(evidence['complete'])
         self.assertFalse(evidence['engaged'])
         self.send(followup, '250', reply='150')
@@ -223,7 +225,7 @@ class ReplyRoutingTest(unittest.TestCase):
     def test_explicit_b_reply_stops_only_b(self):
         runtime, first, second = self.open_b()
         self.add_reply('300', '200', second['slot'])
-        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'])
+        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'], history_plan=history_request(runtime, 'engagement'))
         self.assertEqual(result['context']['event_token'], second['token'])
         self.assertTrue(result['engaged'])
         self.assertEqual(runtime.coach.status()['episode']['next_tasks'][0]['stopped'], 'owner-engaged')
@@ -236,7 +238,7 @@ class ReplyRoutingTest(unittest.TestCase):
             with self.subTest(reference=reference):
                 self.history[0]['message_reference'] = reference
                 with self.assertRaises(ValueError):
-                    runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'])
+                    runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'], history_plan=history_request(runtime, 'engagement'))
                 self.assertEqual(runtime.coach.status(), before)
 
     def test_trusted_capture_rejects_missing_owner_conflicts_and_bad_ids(self):
@@ -247,7 +249,7 @@ class ReplyRoutingTest(unittest.TestCase):
                 pages = self.page(second['slot'])
                 pages[0]['reply_targets'] = targets
                 with self.assertRaises(ValueError):
-                    runtime.engagement(BINDING, pages, now=second['slot'])
+                    runtime.engagement(BINDING, pages, now=second['slot'], history_plan=history_request(runtime, 'engagement'))
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
 
     def test_trusted_inbound_flags_require_exact_captured_owner(self):
@@ -258,14 +260,14 @@ class ReplyRoutingTest(unittest.TestCase):
                        dict(reply_to_message_id='200', inbound_message_id='300'),
                        dict(reply_to_message_id='100', inbound_message_id='999')):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
-                runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'], **kwargs)
+                runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'], **kwargs, history_plan=history_request(runtime, 'engagement', **kwargs))
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
 
     def test_cross_channel_reference_is_not_engagement(self):
         runtime, first, second = self.open_b()
         self.add_reply('300', '200', second['slot'])
         self.history[0]['message_reference']['channel_id'] = '999'
-        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'])
+        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'], history_plan=history_request(runtime, 'engagement'))
         self.assertFalse(result['engaged'])
         self.assertIsNone(result['context'])
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
@@ -287,16 +289,17 @@ class ReplyRoutingTest(unittest.TestCase):
         self.assertEqual(context.returncode, 0, context.stderr)
         self.assertEqual(json.loads(context.stdout)['event_token'], first['token'])
         for target, engaged in (('100', True), ('150', False)):
-            result = subprocess.run(command + ['engagement', '--binding', json.dumps(BINDING),
+            result = subprocess.run(command + [*history_cli(runtime, 'engagement', '--binding', json.dumps(BINDING),
                                     '--pages-file', str(path), '--inbound-message-id', '300',
-                                    '--reply-to-message-id', target], capture_output=True, text=True)
+                                    '--reply-to-message-id', target)], capture_output=True, text=True)
+            if not engaged:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('authorization unknown reply target', result.stderr)
+                continue
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads(result.stdout)
-            self.assertEqual(payload['engaged'], engaged)
-            if engaged:
-                self.assertEqual(payload['context']['event_token'], first['token'])
-            else:
-                self.assertIsNone(payload['context'])
+            self.assertTrue(payload['engaged'])
+            self.assertEqual(payload['context']['event_token'], first['token'])
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
 
     def test_equivalent_raw_and_trusted_references_do_not_conflict(self):
@@ -306,7 +309,7 @@ class ReplyRoutingTest(unittest.TestCase):
         pages = self.page(second['slot'])
         pages[0]['reply_targets'] = {'300': '100'}
         result = runtime.engagement(BINDING, pages, now=second['slot'],
-                                    reply_to_message_id='100', inbound_message_id='300')
+                                    reply_to_message_id='100', inbound_message_id='300', history_plan=history_request(runtime, 'engagement', reply_to_message_id='100'))
         self.assertEqual(result['context']['event_token'], first['token'])
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])
 
@@ -314,14 +317,16 @@ class ReplyRoutingTest(unittest.TestCase):
         runtime = self.two_tasks()
         plan = runtime.native_plan(self.data.parent / 'fictional-profile', python=sys.executable,
                                    helper=fixtures.SCRIPTS / 'task-coach.py', hermes='/fictional/hermes')
-        self.assertIn('--reply-to-message-id', plan['inbound_instruction'])
-        self.assertIn('--inbound-message-id', plan['inbound_instruction'])
-        self.assertIn('never infer', plan['inbound_instruction'])
+        self.assertIn('runtime status/context', plan['inbound_instruction'])
+        self.assertIn('record-engagement', plan['inbound_instruction'])
+        self.assertIn('do not invent reply references', plan['inbound_instruction'])
+        self.assertIn('explicitly requested reply-recovery', plan['inbound_instruction'])
+        self.assertIn('--history-plan-file', plan['inbound_instruction'])
 
     def test_delayed_explicit_reply_engages_a_not_b(self):
         runtime, first, second = self.open_b()
         self.add_reply('300', '100', second['slot'])
-        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'])
+        result = runtime.engagement(BINDING, self.page(second['slot']), now=second['slot'], history_plan=history_request(runtime, 'engagement'))
         self.assertEqual(result['context']['event_token'], first['token'])
         self.assertTrue(result['engaged'])
         self.assertIsNone(runtime.coach.status()['episode']['next_tasks'][0]['stopped'])

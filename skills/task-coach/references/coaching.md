@@ -1,6 +1,53 @@
 # Transport-neutral coaching engine
 
-## Local-first proactive policy (0.1.0rc5)
+## Discord history consent and bounded on-demand use (rc6)
+
+History is OFF by default for fresh stores and all older stores without a saved
+preference. A configured Discord route or an available tool is not consent.
+Local task management, accepted delivery and trusted local-first engagement work
+without history. Never fetch history in routine cron, even after opt-in.
+Only explicitly requested **reply-recovery** or **delivery-verification** may read
+history, after checking exact-route saved consent and caller tool availability.
+No automatic needs detector or routine scan is implemented.
+
+Read `runtime history-preference` to reuse the actual saved choice when setup
+resumes. After confirmed Discord check-in setup, persist an explicit Yes using
+`runtime history-preference --enable --route FULL_CONFIRMED_ROUTE_JSON --confirm-history`.
+An explicit No/change uses `runtime history-preference --disable`; read back the
+preference after either change. Missing preferences already mean No, not approval.
+Consent includes the exact owner/profile/account/chat/thread, channel and bot route;
+a changed route needs new consent. Disable/re-enable rotates the grant generation.
+
+For each explicitly requested operation, run
+`runtime history-plan --purpose reply-recovery|delivery-verification --target DECIMAL_ID --confirm-history`
+and save its returned JSON dict in a private plan file. The grant binds the exact
+route, generation, purpose and target: fetch only the latest **25 messages, ONE page**,
+`before=null`, at most **131072 bytes** total and **8192 bytes** per message.
+Never chase old anchors or fetch additional pages. Preserve genuine raw tool
+results with trusted metadata and request-start timestamps. Pass
+`--history-plan-file PLAN_FILE` with `--pages-file CAPTURE_FILE` to every applicable
+history ingress (`observe`, `confirm`, `engagement`, `resolve-clarification`,
+`dismiss-clarification`). Do not fabricate captures or reply references. An absent
+anchor or insufficient evidence is an optional warning, not permission to expand
+the read or block accepted/local-first work; never claim unverified delivery.
+
+The plan represents **caller-asserted explicit user intent**, not cryptographic
+proof that the user asked. Helper gates do not sandbox arbitrary external tools.
+Review/refresh existing installed instructions and tool allowlists after enabling
+or disabling; persisted core denial takes effect immediately. Deny history tools
+in routine cron, review normal-inbound access separately, and never auto-provision
+an MCP/hosted connector. Capabilities separates saved current-route consent,
+caller-reported tool availability and independent delivery evidence; availability
+and consent never establish verified delivery.
+
+A preserved legacy episode day retains its existing honest history gates. If
+work needs unavailable/unapproved evidence, stop that work and explain the limit;
+never automatically read, bypass the gate, revive stopped slots or resend an
+uncertain attempt. Local-first begins at the established later-day boundary.
+Native-plan is a read-only preview: no adoption, route mutation or installation;
+its cron remains initially paused with both delivery targets local.
+
+## Local-first proactive policy (0.1.0rc6)
 
 Fresh runtime stores use local-first policy by default. After a code update,
 known existing runtime stores automatically adopt it on first ordinary runtime
@@ -92,7 +139,7 @@ An engine intent is not a send or a positive receipt.
 ## Low-level compatibility CLI
 
 The standalone `coach tick` API retains its legacy history-evidence contract.
-Unattended rc5 local-first work must use `runtime`, which sets local-first claim
+Unattended rc6 local-first work must use `runtime`, which sets local-first claim
 provenance instead of consuming fabricated evidence IDs. `deliveries` counts engine
 receipts for accepted as well as independently verified runtime outcomes; inspect
 outbox `acceptance` and `state` to distinguish provenance.
