@@ -1,4 +1,5 @@
 """Real CLI task writers must share the runtime's directory lock."""
+from test_core_history_fixtures import enable_history, history_request
 import fcntl
 import os
 import subprocess
@@ -43,7 +44,7 @@ class TaskWriterLockTest(unittest.TestCase):
     def test_task_writer_cannot_commit_between_resolution_snapshot_and_release(self):
         runtime, history, drafts, now = self.fixture()
         history.insert(0, self.message('104', now))
-        pending = runtime.engagement(BINDING, self.pages(history, now), now=now)['clarifications'][0]
+        pending = runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))['clarifications'][0]
         history.insert(0, self.message('105', now, 'The second task'))
         original_tasks = runtime.coach.tasks
         calls, writers = [], []
@@ -61,7 +62,7 @@ class TaskWriterLockTest(unittest.TestCase):
         try:
             result = runtime.resolve_clarification(binding=BINDING,
                 clarification_id=pending['id'], task_id=drafts[1]['task']['id'],
-                selection_message_id='105', pages=self.pages(history, now), now=now)
+                selection_message_id='105', pages=self.pages(history, now), now=now, history_plan=history_request(runtime, 'resolve_clarification', selection_message_id='105'))
             self.assertTrue(result['engaged'])
             self.assertEqual(result['context']['task']['status'], 'open')
             self.assertEqual(len(writers), 1)

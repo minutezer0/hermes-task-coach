@@ -1,4 +1,5 @@
 """Synthetic recurrence calendar and snapshot isolation tests; no live messages."""
+from test_core_history_fixtures import enable_history, history_request
 import unittest
 from datetime import datetime, timezone
 import random
@@ -43,6 +44,7 @@ class CycleTests(unittest.TestCase):
         engine = self.engine()
         runtime = Driver(self.data)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
+        enable_history(runtime)
         engine.tick(now=datetime(2024, 1, 1, 8, tzinfo=timezone.utc), binding=BINDING)
         event = engine.status()['episode']['events'][0]
         now = datetime.fromisoformat(event['slot'])
@@ -70,7 +72,7 @@ class CycleTests(unittest.TestCase):
 
     def test_old_followup_observation_and_draft_refuse_new_due_cycle(self):
         runtime, first, page, now, binding = self.receipt_fixture()
-        runtime.confirm(first['token'], first['fence'], [page], now=now)
+        runtime.confirm(first['token'], first['fence'], [page], now=now, history_plan=history_request(runtime, 'confirm', first['token'], first['fence']))
         followup = runtime.coach.status()['episode']['events'][1]
         later = datetime.fromisoformat(followup['slot'])
         draft = runtime.draft(followup['token'], 'Old followup', now=later)
@@ -78,7 +80,7 @@ class CycleTests(unittest.TestCase):
         self.cli('done', '1', '--completed-at', '2023-12-30', '--expected-cycle', task['cycle_id'], '--completion-id', 'old-followup')
         page['observed_at'] = later.isoformat()
         page['result']['messages'].insert(0, dict(id='101', content='Reply to old cycle', timestamp=later.isoformat(), author=dict(id=binding['owner'], bot=False), attachments=[], message_reference=dict(message_id='100', channel_id='123')))
-        evidence = runtime.observe(draft['token'], draft['fence'], [page], now=later)
+        evidence = runtime.observe(draft['token'], draft['fence'], [page], now=later, history_plan=history_request(runtime, 'observe', draft['token'], draft['fence']))
         self.assertFalse(evidence['engaged'])
         with self.assertRaises(ValueError):
             runtime.dispatch(draft['token'], draft['fence'], hermes='/fictional/no-send', now=later)
@@ -88,11 +90,11 @@ class CycleTests(unittest.TestCase):
         runtime, draft, page, now, binding = self.receipt_fixture()
         task = self.cli('show', '1')
         self.cli('done', '1', '--completed-at', '2023-12-30', '--expected-cycle', task['cycle_id'], '--completion-id', 'first')
-        receipt = runtime.confirm(draft['token'], draft['fence'], [page], now=now)
+        receipt = runtime.confirm(draft['token'], draft['fence'], [page], now=now, history_plan=history_request(runtime, 'confirm', draft['token'], draft['fence']))
         self.assertEqual(receipt['message_id'], '100')
         self.assertIsNone(runtime.context(binding, reply_to_message_id='100'))
         page['result']['messages'].insert(0, dict(id='101', content='Old reply', timestamp=now.isoformat(), author=dict(id=binding['owner'], bot=False), attachments=[]))
-        result = runtime.engagement(binding, [page], now=now, reply_to_message_id='100', inbound_message_id='101')
+        result = runtime.engagement(binding, [page], now=now, reply_to_message_id='100', inbound_message_id='101', history_plan=history_request(runtime, 'engagement', reply_to_message_id='100'))
         self.assertFalse(result['engaged'])
         self.assertIsNone(result['context'])
         self.assertNotEqual(runtime.coach.status()['episode']['stopped'], 'owner-engaged')
@@ -131,7 +133,7 @@ class CycleTests(unittest.TestCase):
         self.pages = ClarificationTest.pages.__get__(self)
         runtime, history, drafts, now = self.fixture()
         history.insert(0, self.message('104', now))
-        runtime.engagement(BINDING, self.pages(history, now), now=now)
+        runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         state = runtime.status()
         Driver.validate_state(state)
         record = next(iter(state['clarifications'].values()))
@@ -150,7 +152,7 @@ class CycleTests(unittest.TestCase):
         self.pages = ClarificationTest.pages.__get__(self)
         runtime, history, drafts, now = self.fixture()
         history.insert(0, self.message('104', now))
-        hold = runtime.engagement(BINDING, self.pages(history, now), now=now)['clarifications'][0]
+        hold = runtime.engagement(BINDING, self.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))['clarifications'][0]
         task = self.cli('show', '1')
         self.cli('done', '1', '--completed-at', '2024-01-01', '--expected-cycle', task['cycle_id'], '--completion-id', 'old-held-cycle')
         runtime.preflight(now=now)
@@ -158,7 +160,7 @@ class CycleTests(unittest.TestCase):
         self.assertFalse(runtime.preflight(now=retry['slot'])['wakeAgent'])
         history.insert(0, self.message('105', retry['slot'], 'First task'))
         with self.assertRaises(ValueError):
-            runtime.resolve_clarification(binding=BINDING, clarification_id=hold['id'], task_id=1, selection_message_id='105', pages=self.pages(history, retry['slot']), now=retry['slot'])
+            runtime.resolve_clarification(binding=BINDING, clarification_id=hold['id'], task_id=1, selection_message_id='105', pages=self.pages(history, retry['slot']), now=retry['slot'], history_plan=history_request(runtime, 'resolve_clarification', selection_message_id='105'))
 
     def test_planned_events_cannot_follow_reused_row_even_after_next_due(self):
         self.cli('update', '1', '--repeat', '1 day', '--due', '2024-01-01')

@@ -20,7 +20,7 @@ class CoachingArtifactTest(unittest.TestCase):
             (root / 'tests').mkdir()
             shutil.copyfile(SOURCE / 'tests/test_core_coaching.py', root / 'tests/test_core_coaching.py')
             shutil.copyfile(SOURCE / 'tests/test_core_driver.py', root / 'tests/test_core_driver.py')
-            for name in ('test_core_restart.py', 'test_core_live_test.py', 'test_core_local_first.py', 'test_core_clarification.py'):
+            for name in ('test_core_history_fixtures.py', 'test_core_restart.py', 'test_core_live_test.py', 'test_core_local_first.py', 'test_core_clarification.py'):
                 shutil.copyfile(SOURCE / 'tests' / name, root / 'tests' / name)
             env = dict(HOME=str(root / 'synthetic-home'), HERMES_HOME=str(root / 'synthetic-profile'), TMPDIR=str(root), PYTHONDONTWRITEBYTECODE='1')
             result = subprocess.run([sys.executable, '-I', '-B', '-m', 'unittest', 'discover', '-s', str(root / 'tests'), '-p', 'test_core_coaching.py', '-q'], cwd=root, env=env, text=True, capture_output=True)
@@ -93,7 +93,7 @@ print('wheel lifecycle: 3 confirmed deliveries; duplicate claims suppressed')
             shutil.copytree(venv / 'share/task-coach/skill', copied)
             (root / 'tests').mkdir()
             shutil.copyfile(SOURCE / 'README.md', root / 'README.md')
-            for name in ('test_core_coaching.py', 'test_core_driver.py', 'test_core_restart.py', 'test_core_live_test.py', 'test_core_local_first.py', 'test_core_clarification.py'):
+            for name in ('test_core_history_fixtures.py', 'test_core_coaching.py', 'test_core_driver.py', 'test_core_restart.py', 'test_core_live_test.py', 'test_core_local_first.py', 'test_core_clarification.py'):
                 shutil.copyfile(SOURCE / 'tests' / name, root / 'tests' / name)
             launcher = copied / 'scripts/task-coach.py'
             result = run([sys.executable, '-I', '-B', str(launcher), 'coach', 'inspect'], env=env)

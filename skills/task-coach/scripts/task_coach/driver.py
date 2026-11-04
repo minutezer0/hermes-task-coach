@@ -7,10 +7,40 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import uuid
+import threading
+from functools import wraps
+from inspect import signature
 
 from . import clarification
 from .recurrence import same_cycle, same_snapshot
 from .coaching import Coach, UTC, instant, safe_path, validate_binding, sequences, event_episode
+
+
+def history_ingress(method):
+    """One directory-lock lease covers consent, capture validation and all commits."""
+    parameters = signature(method)
+
+    @wraps(method)
+    def guarded(self, *args, **kwargs):
+        values = parameters.bind(self, *args, **kwargs)
+        values.apply_defaults()
+        with self._directory_lock():
+            self._authorize_ingress(method.__name__, values.arguments)
+            return method(self, *args, **kwargs)
+    return guarded
+
+
+class _DriverCoach(Coach):
+    def __init__(self, driver):
+        self.driver = driver
+        super().__init__(driver.directory, opportunity_minutes=10)
+
+    @contextmanager
+    def transaction(self):
+        # The Driver and engine share one reentrant, thread-local directory lease.
+        with self.driver._directory_lock():
+            with self._transaction() as state:
+                yield state
 
 SCHEMA = 'CREATE TABLE runtime (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)'
 
@@ -19,8 +49,16 @@ class Driver:
     @staticmethod
     def validate_state(state):
         try:
-            if not {'route', 'outbox'} <= set(state) <= {'route', 'outbox', 'clarifications', 'clarification_retry', 'clarification_responses', 'local_first', 'engagements'} or not isinstance(state['outbox'], dict):
+            if not {'route', 'outbox'} <= set(state) <= {'route', 'outbox', 'clarifications', 'clarification_retry', 'clarification_responses', 'local_first', 'engagements', 'history_consent'} or not isinstance(state['outbox'], dict):
                 raise ValueError
+            if 'history_consent' in state:
+                consent = state['history_consent']
+                if (not isinstance(consent, dict) or set(consent) != {'enabled', 'route', 'generation'}
+                        or type(consent['enabled']) is not bool
+                        or not isinstance(consent['generation'], str) or not consent['generation']
+                        or consent['route'] != state['route']):
+                    raise ValueError
+                Driver.validate_route(consent['route'])
             if 'local_first' in state:
                 policy = state['local_first']
                 if not isinstance(policy, dict) or set(policy) != {'after_day'}:
@@ -203,8 +241,25 @@ class Driver:
             raise ValueError('invalid runtime state') from None
 
     def __init__(self, data_dir):
-        self.coach = Coach(data_dir, opportunity_minutes=10)
+        self._locks = threading.local()
         self.directory = Path(data_dir)
+        self.coach = _DriverCoach(self)
+
+    @contextmanager
+    def _directory_lock(self):
+        import fcntl
+        if getattr(self._locks, 'fd', None) is not None:
+            yield self._locks.fd
+            return
+        safe_path(self.directory, True)
+        fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            self._locks.fd = fd
+            yield fd
+        finally:
+            self._locks.fd = None
+            os.close(fd)
 
     def _policy_boundary(self, runtime):
         """Read/validate compatibility inputs under the already-held directory lock.
@@ -241,7 +296,8 @@ class Driver:
         # Same directory lock as the engine, but never nest these transactions.
         import fcntl
         safe_path(self.directory, True)
-        fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        held = getattr(self._locks, 'fd', None)
+        fd = os.dup(held) if held is not None else os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             path = self.directory / 'outbox.sqlite3'
@@ -311,8 +367,144 @@ class Driver:
         with self.transaction() as state:
             if state['outbox'] and state['route'] != route:
                 raise ValueError('cannot rebind a nonempty outbox; use a separate data directory')
+            if state['route'] != route:
+                state.pop('history_consent', None)
             state['route'] = route
         return dict(configured=True, route=route, live_verified=False)
+
+    def history_preference(self, *, enabled=None, route=None, confirm=False):
+        """Explicit opt-in for this exact confirmed route; absent rc5 field is OFF."""
+        with self.transaction(readonly=enabled is None, adopt=False) as state:
+            if enabled is not None:
+                if type(enabled) is not bool:
+                    raise ValueError('history preference must be boolean')
+                if enabled and (not confirm or route != state['route']):
+                    raise ValueError('history requires explicit confirmation of the exact route')
+                if state['route'] is None:
+                    raise ValueError('runtime setup not confirmed')
+                state['history_consent'] = dict(enabled=enabled, route=state['route'], generation=uuid.uuid4().hex)
+                # A new consent generation cannot inherit old history evidence.
+                for row in state['outbox'].values():
+                    row['evidence'] = None
+            return json.loads(json.dumps(state.get('history_consent',
+                dict(enabled=False, route=state['route'], generation=None))))
+
+    def history_plan(self, *, purpose, target, confirm=False):
+        """Declare caller intent for one bounded on-demand read; no fetch or proof of intent."""
+        preference = self.history_preference()
+        if not preference['enabled']:
+            raise ValueError('Discord history authorization required (default OFF)')
+        if (not confirm or purpose not in ('reply-recovery', 'delivery-verification')
+                or not isinstance(target, str) or not target.isdecimal()):
+            raise ValueError('Discord history authorization requires explicit on-demand purpose and exact target')
+        return dict(generation=preference['generation'], route=preference['route'],
+            purpose=purpose, target=target, channel_id=preference['route']['channel_id'],
+            limit=25, max_pages=1, max_payload_bytes=131072, max_message_bytes=8192,
+            before=None, trigger='on-demand')
+
+    def authorize_history(self, request, *, purpose, target):
+        expected = self.history_plan(purpose=purpose, target=target, confirm=True)
+        if (type(request) is not dict or request != expected
+                or any(type(request.get(key)) is not type(value) for key, value in expected.items())):
+            raise ValueError('Discord history authorization mismatch or revoked request')
+        return expected
+
+    def _authorize_ingress(self, operation, values, *, capture=True):
+        self._require_history()
+        request = values.get('history_plan')
+        if not isinstance(request, dict):
+            raise ValueError('Discord history authorization plan required')
+        purpose = 'delivery-verification' if operation == 'confirm' else 'reply-recovery'
+        # First validate the grant itself before looking at any caller capture.
+        self.authorize_history(request, purpose=purpose, target=request.get('target'))
+        with self.transaction(readonly=True, adopt=False) as runtime:
+            route = runtime['route']
+            if 'binding' in values and values['binding'] != route['binding']:
+                raise ValueError('Discord history authorization binding mismatch')
+            if operation in ('confirm', 'observe'):
+                row = runtime['outbox'].get(values['token'])
+                if not row or row['fence'] != values['fence'] or row['route'] != route:
+                    raise ValueError('Discord history authorization unknown event or stale fence')
+                if operation == 'confirm':
+                    fixed = row.get('candidate_id') or row.get('receipt', {}).get('message_id')
+                    if fixed and values.get('message_id') is not None and values['message_id'] != fixed:
+                        raise ValueError('Discord history authorization conflicting receipt target')
+                    target = fixed or values.get('message_id')
+                else:
+                    target = (row.get('previous') or {}).get('receipt', {}).get('message_id')
+            elif operation == 'engagement':
+                rows = [r for r in runtime['outbox'].values()
+                        if r['route'] == route and r['state'] == 'confirmed']
+                selected = [r for r in rows if r['receipt']['message_id'] == values.get('reply_to_message_id')] or rows
+                row = max(selected, key=lambda r: (instant(r['receipt']['delivered_at']), int(r['receipt']['message_id']))) if selected else None
+                target = row['receipt']['message_id'] if row else None
+                if values.get('reply_to_message_id') is not None and values['reply_to_message_id'] != target:
+                    raise ValueError('Discord history authorization unknown reply target')
+            else:
+                record = runtime.get('clarifications', {}).get(values['clarification_id'])
+                if not record or record['binding'] != values['binding']:
+                    raise ValueError('Discord history authorization unknown clarification')
+                target = values['selection_message_id' if operation == 'resolve_clarification' else 'dismissal_message_id']
+        self.authorize_history(request, purpose=purpose, target=target)
+        if capture:
+            self._history_capture_budget(values['pages'], request)
+
+    @staticmethod
+    def _history_capture_budget(pages, request):
+        # Validate the raw envelope and every message, including the tail after
+        # the target: the semantic parser may intentionally stop at its anchor.
+        if type(pages) is not list or len(pages) != 1 or type(pages[0]) is not dict:
+            raise ValueError('history budget requires exactly one raw page')
+        page = pages[0]
+        if (page.get('binding') != request['route']['binding']
+                or page.get('channel_id') != request['channel_id']
+                or 'before' not in page or page['before'] is not None
+                or type(page.get('result')) is not dict):
+            raise ValueError('history authorization raw envelope mismatch')
+        result = page['result']
+        for envelope in (page, result):
+            if (('channel_id' in envelope and envelope['channel_id'] != request['channel_id'])
+                    or ('before' in envelope and envelope['before'] is not None)
+                    or ('limit' in envelope and (type(envelope['limit']) is not int or not 1 <= envelope['limit'] <= request['limit']))):
+                raise ValueError('history authorization raw request mismatch')
+        batch = result.get('messages')
+        if type(batch) is not list or not 1 <= len(batch) <= request['limit']:
+            raise ValueError('history message budget exceeded or unavailable')
+
+        def bounded_json(value, maximum):
+            total = 0
+            try:
+                for chunk in json.JSONEncoder(ensure_ascii=False).iterencode(value):
+                    total += len(chunk.encode('utf-8'))
+                    if total > maximum:
+                        raise ValueError('history payload byte budget exceeded')
+            except (TypeError, RecursionError, UnicodeError):
+                raise ValueError('malformed history payload') from None
+        for message in batch:
+            if type(message) is not dict:
+                raise ValueError('malformed history message')
+            if 'channel_id' in message and message['channel_id'] != request['channel_id']:
+                raise ValueError('history authorization raw message channel mismatch')
+            bounded_json(message, request['max_message_bytes'])
+        bounded_json(pages, request['max_payload_bytes'])
+        if not any(message.get('id') == request['target'] for message in batch):
+            raise ValueError('history authorization target missing from actual capture')
+
+    def _history_state(self):
+        # Authorization/rejection must not implicitly adopt an old runtime.
+        with self.transaction(readonly=True, adopt=False) as state:
+            return json.loads(json.dumps(state))
+
+    def _history_row(self, token, fence):
+        row = self._history_state()['outbox'].get(token)
+        if row is None or row['fence'] != fence:
+            raise ValueError('unknown event or stale fence')
+        return row
+
+    def _require_history(self):
+        preference = self.history_preference()
+        if not preference['enabled']:
+            raise ValueError('Discord history authorization required (default OFF)')
 
     def status(self):
         with self.transaction() as state:
@@ -411,8 +603,13 @@ class Driver:
             raise ValueError('history error must be nonempty text')
         state = 'unavailable' if history_error or history_available is False else 'available' if history_available else 'unknown'
         local_first = self.local_first(now=now if now is not None else datetime.now(UTC))
+        preference = self.history_preference()
         return dict(local_first=local_first,
-                    history=dict(state=state, source='caller-inventory-or-attempt', error=history_error),
+                    history=dict(state=state, source='caller-inventory-or-attempt', error=history_error,
+                                 consent=preference, routine_reads_allowed=False,
+                                 delivery_verified=False,
+                                 verification='availability-and-consent-are-not-delivery-evidence',
+                                 purposes=['reply-recovery', 'delivery-verification']),
                     degraded=state != 'available', history_required=not local_first)
 
     def record_engagement(self, *, binding, owner, message_id, event_token, task_id,
@@ -548,6 +745,8 @@ class Driver:
         now = instant(now or datetime.now(UTC))
         from zoneinfo import ZoneInfo
         from .coaching import DAYS, eligible
+        if not self.local_first() and (row['previous'] or clarification.retry_row(row)):
+            self._require_history()
         if clarification.retry_row(row):
             with self.transaction() as runtime:
                 with self.coach._transaction() as engine:
@@ -586,6 +785,8 @@ class Driver:
         now = instant(now or datetime.now(UTC))
         row = self.row(token, fence)
         local_first = self.local_first()
+        if not local_first and (row['previous'] or clarification.retry_row(row)):
+            self._require_history()
         if row['state'] != 'draft':
             raise ValueError('event already attempted; automatic resend forbidden')
         prepared = self.preflight(now=now)
@@ -614,6 +815,10 @@ class Driver:
             # Serialize the final hold check with the send boundary. A hold
             # admitted by another worker cannot be bypassed after authorization.
             with self.transaction() as state:
+                if not local_first and (row['previous'] or clarification.retry_row(row)):
+                    if (not state.get('history_consent', {}).get('enabled', False)
+                            or state['outbox'][token]['evidence'] != row['evidence']):
+                        raise ValueError('Discord history authorization revoked at send boundary')
                 if not local_first and not clarification.retry_row(row) and clarification.pending(state):
                     raise ValueError('pending clarification; delivery held')
                 with self.coach._transaction() as engine:
@@ -672,16 +877,19 @@ class Driver:
             self.coach.reconcile(result['receipt'], now=result['receipt']['delivered_at'])
         return result
 
-    def confirm(self, token, fence, pages, *, now=None, message_id=None):
+    @history_ingress
+    def confirm(self, token, fence, pages, *, now=None, message_id=None, history_plan=None):
+        return self._confirm_capture(token, fence, pages, now=now, message_id=message_id)
+
+    def _confirm_capture(self, token, fence, pages, *, now=None, message_id=None):
+        # Private reuse by observe: its lease already authorizes this exact
+        # target/capture for reply recovery, including optional anchor readback.
+        self._require_history()
         now = instant(now or datetime.now(UTC))
-        row = self.row(token, fence)
-        if row['state'] == 'confirmed':
-            if message_id is not None and message_id != row['receipt']['message_id']:
-                raise ValueError('conflicting confirmed receipt')
-            return row['receipt']
+        row = self._history_row(token, fence)
         if row.get('candidate_id') and message_id is not None and message_id != row['candidate_id']:
             raise ValueError('conflicting candidate ID')
-        candidate = row.get('candidate_id') or message_id
+        candidate = row.get('candidate_id') or message_id or row.get('receipt', {}).get('message_id')
         if row['state'] not in ('sending', 'accepted', 'confirmed') or not candidate:
             raise ValueError('confirmation requires a journaled sending attempt and exact message ID')
         if row.get('candidate_id'):
@@ -702,6 +910,10 @@ class Driver:
         if message['author']['id'] != row['route']['bot_id'] or message['author']['bot'] is not True or message['content'] != row['body'] or not instant(row['attempted_at']) <= delivered <= now or instant(row['attempted_at']) >= instant(row['intent']['expires']):
             raise ValueError('sent-message readback does not match journaled attempt')
         receipt = dict(event_token=token, binding=row['route']['binding'], message_id=message['id'], cursor=message['id'], delivered_at=message['timestamp'])
+        if row['state'] == 'confirmed':
+            if receipt != row['receipt']:
+                raise ValueError('conflicting confirmed receipt')
+            return row['receipt']
         for other in self.status()['outbox'].values():
             if other['token'] != token and other.get('receipt', {}).get('message_id') == message['id'] and other['route'] == row['route']:
                 raise ValueError('replayed receipt')
@@ -718,36 +930,35 @@ class Driver:
             if clarification.retry_row(row):
                 clarification.activity(state, messages[:-1], ids=row['intent']['clarification_ids'])
         if not clarification.retry_row(row):
-            self.attribute_engagement(messages[:-1], row['route'])
+            self._attribute_engagement(messages[:-1], row['route'])
         return receipt
 
-    def observe(self, token, fence, pages, *, now=None):
+    @history_ingress
+    def observe(self, token, fence, pages, *, now=None, history_plan=None):
+        self._require_history()
         now = instant(now or datetime.now(UTC))
-        row = self.row(token, fence)
+        row = self._history_row(token, fence)
         if clarification.retry_row(row):
-            with self.transaction() as runtime:
-                current = runtime['outbox'][token]
-                current['evidence'] = None
             with self.transaction() as runtime:
                 return clarification.observe(self, runtime, runtime['outbox'][token], pages, now)
         previous = row['previous']
         if not previous or not previous['receipt']:
             raise ValueError('observation requires a delivered previous event')
         receipt = previous['receipt']
-        with self.transaction() as state:
-            state['outbox'][token]['evidence'] = None
         messages = validate_pages(pages, row['route'], receipt['message_id'], now)
         # Acceptance timestamps describe the native response, not platform time.
         # Optional observation can independently verify that exact prior attempt;
         # retain its original acceptance and use the verified anchor for history.
-        prior = self.status()['outbox'].get(previous['token'])
-        if prior and prior.get('acceptance'):
-            receipt = self.confirm(prior['token'], prior['fence'], pages, now=now)
+        prior = self._history_state()['outbox'].get(previous['token'])
+        if not prior or prior['route'] != row['route']:
+            raise ValueError('history anchor does not match previous route')
+        # All prior receipts, including legacy ones, require exact readback.
+        receipt = self._confirm_capture(prior['token'], prior['fence'], pages, now=now)
         anchor = messages[-1]
         if anchor['author']['id'] != row['route']['bot_id'] or anchor['author']['bot'] is not True or instant(anchor['timestamp']) != instant(receipt['delivered_at']):
             raise ValueError('history anchor does not match previous receipt')
         fallback = dict(row, token=previous['token'], receipt=receipt)
-        targets, ambiguous = self.attribute_engagement(messages[:-1], row['route'], fallback=fallback)
+        targets, ambiguous = self._attribute_engagement(messages[:-1], row['route'], fallback=fallback)
         ambiguous = ambiguous or bool(self.pending_clarifications(row['route']['binding']))
         engaged = not ambiguous and any(target and target['task']['id'] == row['task']['id'] for target in targets)
         evidence = dict(binding=row['route']['binding'], event_token=previous['token'], message_id=receipt['message_id'], cursor=receipt['cursor'], snapshot_id=uuid.uuid4().hex, observed_at=min(instant(p['observed_at']) for p in pages).isoformat(), complete=not ambiguous, engaged=engaged, error='ambiguous-engagement' if ambiguous else None)
@@ -755,7 +966,7 @@ class Driver:
             state['outbox'][token]['evidence'] = evidence
         return evidence
 
-    def attribute_engagement(self, messages, route, *, fallback=None, trusted_references=None):
+    def _attribute_engagement(self, messages, route, *, fallback=None, trusted_references=None):
         """Classify the entire batch before engagement; persist only ambiguity holds."""
         from .coaching import eligible
         with self.transaction() as runtime:
@@ -870,9 +1081,11 @@ class Driver:
                             sequence['stopped'] = sequence['stopped'] or 'owner-engaged'
                 return targets, ambiguous
 
+    @history_ingress
     def resolve_clarification(self, *, binding, clarification_id, task_id,
-                              selection_message_id, pages, now=None):
+                              selection_message_id, pages, now=None, history_plan=None):
         """Normal-inbound explicit selection, not manufactured Discord reply metadata."""
+        self._require_history()
         from .coaching import eligible
         now_supplied = now is not None
         validate_binding(binding)
@@ -889,6 +1102,11 @@ class Driver:
             if record['state'] in ('dismissed', 'retired'):
                 raise ValueError('clarification already dismissed or retired; conflicting resolution')
             if record['state'] in ('resolving', 'resolved'):
+                anchor = min(record['candidates'], key=lambda c: int(c['receipt']['message_id']))['receipt']
+                messages = validate_pages(pages, runtime['route'], anchor['message_id'], now)
+                captured = next((m for m in messages if m['id'] == selection_message_id), None)
+                if captured != record['selection']:
+                    raise ValueError('conflicting captured selection message')
                 if record['selected_token'] != candidate['token'] or record['selection']['id'] != selection_message_id:
                     raise ValueError('conflicting clarification resolution')
                 if record['state'] == 'resolved':
@@ -948,14 +1166,16 @@ class Driver:
         # releases the hold after engine commit; an interrupted retry is safe.
         return self.resolve_clarification(binding=binding, clarification_id=clarification_id,
             task_id=task_id, selection_message_id=selection_message_id, pages=pages,
-            now=now if now_supplied else None)
+            now=now if now_supplied else None, history_plan=history_plan)
 
-    def dismiss_clarification(self, *, binding, clarification_id, dismissal_message_id, pages, now=None):
+    @history_ingress
+    def dismiss_clarification(self, *, binding, clarification_id, dismissal_message_id, pages, now=None, history_plan=None):
         """Discard one pending question on skill-mediated explicit owner intent.
 
         No text classifier and no engine write: an existing write-ahead resolution
         is deliberately irreversible here, even if its engine commit is uncertain.
         """
+        self._require_history()
         validate_binding(binding)
         if not isinstance(dismissal_message_id, str) or not dismissal_message_id.isdecimal():
             raise ValueError('dismissal requires an exact captured owner message ID')
@@ -965,6 +1185,11 @@ class Driver:
             if not record or record['binding'] != binding or runtime['route']['binding'] != binding:
                 raise ValueError('unknown clarification or binding mismatch')
             if record['state'] == 'dismissed':
+                anchor = min(record['candidates'], key=lambda c: int(c['receipt']['message_id']))['receipt']
+                messages = validate_pages(pages, runtime['route'], anchor['message_id'], current)
+                captured = next((m for m in messages if m['id'] == dismissal_message_id), None)
+                if captured != record['dismissal']:
+                    raise ValueError('conflicting captured dismissal message')
                 if record['dismissal']['id'] != dismissal_message_id:
                     raise ValueError('conflicting clarification dismissal')
                 return record['result']
@@ -1007,7 +1232,9 @@ class Driver:
         return [c for c in self.status().get('clarifications', {}).values()
                 if c['binding'] == binding and c['state'] not in clarification.TERMINAL]
 
-    def engagement(self, binding, pages, *, now=None, reply_to_message_id=None, inbound_message_id=None):
+    @history_ingress
+    def engagement(self, binding, pages, *, now=None, reply_to_message_id=None, inbound_message_id=None, history_plan=None):
+        self._require_history()
         now = instant(now or datetime.now(UTC))
         validate_binding(binding)
         if (reply_to_message_id is None) != (inbound_message_id is None):
@@ -1015,12 +1242,17 @@ class Driver:
         if reply_to_message_id is not None and any(not isinstance(value, str) or not value.isdecimal()
                                                   for value in (reply_to_message_id, inbound_message_id)):
             raise ValueError('trusted inbound IDs must be decimal strings')
-        rows = [r for r in self.status()['outbox'].values() if r['route']['binding'] == binding and r['state'] == 'confirmed']
+        rows = [r for r in self._history_state()['outbox'].values() if r['route']['binding'] == binding and r['state'] == 'confirmed']
         if not rows:
             return dict(engaged=False, context=None, error=None)
         selected = [r for r in rows if r['receipt']['message_id'] == reply_to_message_id] or rows
         row = max(selected, key=lambda r: (instant(r['receipt']['delivered_at']), int(r['receipt']['message_id'])))
         messages = validate_pages(pages, row['route'], row['receipt']['message_id'], now)
+        anchor = messages[-1]
+        if (anchor['author']['id'] != row['route']['bot_id'] or anchor['author']['bot'] is not True
+                or anchor['content'] != row['body']
+                or instant(anchor['timestamp']) != instant(row['receipt']['delivered_at'])):
+            raise ValueError('history anchor does not match exact confirmed receipt')
         owners = messages[:-1]
         trusted_references = {}
         if inbound_message_id is not None:
@@ -1032,7 +1264,7 @@ class Driver:
             if 'message_reference' in owners[0] and reference_key(owners[0]['message_reference'], row['route']['channel_id']) != reference_key(reference, row['route']['channel_id']):
                 raise ValueError('conflicting reply target metadata')
             trusted_references[inbound_message_id] = reference
-        targets, ambiguous = self.attribute_engagement(owners, row['route'], trusted_references=trusted_references)
+        targets, ambiguous = self._attribute_engagement(owners, row['route'], trusted_references=trusted_references)
         if ambiguous or self.pending_clarifications(binding):
             return dict(engaged=False, context=None, error='ambiguous-engagement',
                         clarifications=self.pending_clarifications(binding))
@@ -1055,42 +1287,37 @@ class Driver:
         text += '    candidate = json.loads(process.stdout.splitlines()[-1])\n'
         text += '    if process.returncode == 0 and type(candidate.get("wakeAgent")) is bool:\n        result = candidate\n'
         text += 'except Exception:\n    pass\nprint(json.dumps(result))\n'
-        prompt = ('Load task-coach and follow its native runtime protocol. Use helper ' + str(helper_path) + ' with --data-dir ' + str(self.directory.resolve()) + '. Re-run runtime preflight. For a kind:clarification intent compose one question for the exact returned clarification_ids using candidate titles, not a task check-in. Otherwise compose one human check-in only for its current task. For followups and clarification retries fetch and validate fresh complete Discord history through the returned previous receipt before dispatch. Fresh owner activity requires normal inbound clarification handling, never automatic task engagement. Use runtime draft/observe/dispatch/confirm; native Hermes executable ' + str(hermes_path) + '. Never send directly or retry uncertain attempts. No final chat delivery: delivery is handled by the helper.')
-        instruction = ('For normal inbound messages ONLY matching the explicitly confirmed Task Coach binding, load task-coach and use the trusted inbound owner/profile/account/chat/thread with runtime context --binding. If trusted inbound metadata exposes an explicit reply target, pass --reply-to-message-id to context and pass both --reply-to-message-id and --inbound-message-id to runtime engagement with fresh history through the exact target receipt. Otherwise capture fresh history through the latest confirmed receipt from runtime status and run runtime engagement; never infer a missing reply target from text or history order. Follow the documented reply_targets capture interface only for trusted metadata. Null context or ambiguous-engagement is not task attribution: before changing task data or marking engagement, ask which task using the pending clarification candidate titles, not raw IDs. The durable pending hold blocks ordinary task sends. Initial questions are normal inbound conversation; clarification retries are allowed only through due native kind:clarification intents with draft/observe/dispatch/confirm and fresh raw history, never direct reminders. Unanswered pending questions retire at the next allowed notification window with audit retained and no task changes; resolving/resolved choices, pause/failure/uncertain sends and safety blocks are never cleared. Explicit replies to retry receipts route to those questions, not task engagement; never reclassify retired originals or processed response IDs. On an explicit owner choice use runtime resolve-clarification --binding with --clarification-id, --task-id for the selected snapshot, --selection-message-id from trusted inbound context and --pages-file containing fresh raw history through the oldest captured candidate receipt. This is explicit-owner-selection provenance, not a Discord reply reference; never add it to reply_targets. Inspect pending records before engagement on a selection or dismissal turn. If the owner explicitly says "never mind" or "dismiss that question", use runtime dismiss-clarification --binding with the exact --clarification-id, trusted later --dismissal-message-id and --pages-file containing fresh raw history through the oldest candidate receipt. No task selection, edit, completion, snooze, engagement, task cancellation or global pause is implied. Read back runtime status. Say "I will not apply that reply; both tasks are unchanged" only after success and when still true; otherwise say "I will not apply that reply or make any task changes". If the owner just says "cancel", ask whether they mean dismiss the question, cancel a named task or pause all check-ins; do not guess. If several holds exist, ask which question by candidate titles. Dismissal permits edited/deleted originals and changed/unavailable candidates but refuses a durable resolving or resolved choice; never undo suppression or edit safety records. Never fabricate inbound IDs, captures or reply references. Preserve all other delivery blocks, never replay missed sends, and never fall back to the latest task. Continue only a returned task with one useful next-step question; never mark it done without permission. Honor explicit pause via coach pause. Do not apply this instruction to other users or destinations.')
-        effective_local_first = True
-        if (self.directory / 'outbox.sqlite3').exists():
-            # Planning is a read-only preview, not the first-use migration trigger.
-            with self.transaction(readonly=True, adopt=False) as runtime:
-                day = self._policy_boundary(runtime)
-                boundary = runtime.get('local_first', dict(after_day=day))['after_day']
-                effective_local_first = boundary is None or day is not None and day > boundary
-        if effective_local_first:
-            prompt = ('Load task-coach. Use helper ' + str(helper_path) + ' with --data-dir ' + str(self.directory.resolve())
-                + '. Re-run runtime preflight. Local eligibility, recorded engagement, windows, budgets and pause authorize openers AND followups. '
-                'History/readback is OPTIONAL. Inspect caller native tool inventory; report runtime capabilities --history-availability unknown/unavailable/available '
-                'and --history-error on an actual failed attempt. Missing history is degraded, not a send failure: do not wait for history or substitute a hosted connector. '
-                'No source imports, raw credentials, alternate APIs or workarounds. Use the local-first path: compose for the exact returned task, runtime draft, runtime dispatch '
-                '--hermes ' + str(hermes_path) + '. Native Hermes send is the only transport. Positive accepted delivery is durable; confirm is optional independent verification. '
-                'An optional observation or confirmation failure must not freeze valid queued work. Legacy current-day policy is not revived: follow its existing restrictions until rollover. '
-                'Never resend an attempted/uncertain event. For actual failed or uncertain sends report [CRON_FAILURE] with the exact affected event, not silent success; '
-                'verification warnings are separate. Quiet local guards are not failures. No final chat delivery: delivery is handled by the helper.')
-            instruction = ('For normal inbound ONLY matching the confirmed owner/profile/account/chat/thread binding, load task-coach. '
-                'Inspect runtime status/context and choose the CURRENT task event and recurrence cycle from explicit owner intent. '
-                'For genuine trusted inbound activity use runtime record-engagement --binding JSON --owner OWNER --message-id INBOUND_ID '
-                '--event-token EVENT --task-id TASK [--cycle-id CYCLE] --intent engaged or skip-for-now. Retain exact IDs for idempotent retry. '
-                'This is agent-mediated explicit intent, not an invented reply reference. History is optional, never required to record trusted inbound. '
-                'A recorded skip stops only the matching current sequence, not task completion/snooze or unrelated check-ins. '
-                'If attribution or requested edits are ambiguous, ask which task before editing or recording engagement; never globally freeze scheduled work. '
-                'Preserve immutable clarification outcomes; never undo resolving/resolved choices or uncertain attempts. '
-                'Unknown/unrecorded replies can receive bounded followups. Pause uses coach pause and readback; task edits require separate explicit intent.')
-        if not effective_local_first:
-            transition = ('Check the effective policy on each turn: re-run runtime preflight when scheduled, then runtime capabilities. '
-                'The following history-gated instructions apply ONLY while capabilities reports local_first:false for the preserved legacy episode day. '
-                'On later local-first days use the local-first scheduled/inbound lifecycle in the skill: history/readback is optional for openers AND followups, '
-                'use runtime draft/dispatch and trusted runtime record-engagement; never revive legacy slots or retry attempted/uncertain events. ')
-            prompt = transition + prompt
-            instruction = transition + instruction
-        return dict(script_path=str(script), script_text=text,
+        # Final policy applies to every preview, including preserved legacy days.
+        prompt = ('Load task-coach. Use helper ' + str(helper_path) + ' with --data-dir ' + str(self.directory.resolve())
+            + '. Re-run runtime preflight and runtime capabilities. Never fetch Discord history in routine cron, even with saved opt-in. '
+            'Do not call history-plan or any external history tool in scheduled turns. No hosted connector, source imports, raw credentials or alternate APIs. '
+            'For local-first work local eligibility, recorded engagement, windows, spacing, budgets and pause authorize openers AND followups without history. '
+            'Compose only for the returned current task; runtime draft then runtime dispatch --hermes ' + str(hermes_path) + '. '
+            'Native Hermes send is the only transport. Accepted is transport acceptance, not independently verified arrival. '
+            'Optional history failure or an absent anchor is a verification warning, never a local-first scheduling lock. '
+            'A preserved legacy episode retains its honest history gates until rollover: if due work requires history, stop and explain the limit; never fetch automatically or bypass it. '
+            'Never revive missed slots or resend attempted/uncertain events. Actual failed/uncertain sends require [CRON_FAILURE]; quiet guards and optional verification warnings are separate. '
+            'No final chat delivery: delivery is handled by the helper.')
+        instruction = ('For normal inbound ONLY matching the confirmed owner/profile/account/chat/thread binding, load task-coach and inspect runtime status/context. '
+            'Prefer trusted runtime record-engagement --binding JSON --owner OWNER --message-id INBOUND_ID --event-token EVENT --task-id TASK '
+            '[--cycle-id CYCLE] --intent engaged or skip-for-now, using explicit owner intent and current cycle. No history is required for local-first engagement. '
+            'Ask naturally which task when ambiguous; do not invent reply references, complete/snooze tasks or globally freeze local-first work. '
+            'Inspect runtime history-preference and runtime capabilities --history-availability unknown|unavailable|available; tool availability is not consent or delivery verification. '
+            'With history OFF make no external history reads. With exact-route consent ON, only an explicitly requested reply-recovery or delivery-verification may use '
+            'runtime history-plan --purpose PURPOSE --target DECIMAL_ID --confirm-history. Save the returned dict grant privately, then fetch at most 25 latest messages, '
+            'ONE page, before=null, at most 131072 payload bytes and 8192 bytes per message for that exact route/generation/purpose/target. '
+            'Pass --history-plan-file FILE alongside --pages-file FILE to the appropriate runtime enrichment command. Never chase old anchors or fabricate captures. '
+            'An absent anchor or optional failure is a warning, not a block on accepted/local-first work. '
+            'The plan records caller-asserted explicit user intent; it cannot cryptographically prove the user asked. Helper gates do not sandbox arbitrary external tools. '
+            'Never fetch routinely, substitute an MCP/hosted connector, or infer consent from tool availability. '
+            'Retain exact identities for retries; preserve legacy gates and immutable clarification outcomes, resolving/resolved choices and uncertain attempts. '
+            'Pause uses coach pause and readback; completion, snooze and other task edits need separate explicit intent.')
+        history_policy = dict(default='off', routine_reads_allowed=False,
+            purposes=['reply-recovery', 'delivery-verification'], limit=25, max_pages=1,
+            max_payload_bytes=131072, max_message_bytes=8192,
+            tool_restrictions='Deny history tools in routine cron; review scoped inbound allowlists separately. Never auto-provision connectors.',
+            refresh='Review/refresh installed instructions and tool allowlists after preference changes; persisted core denial is immediate.')
+        return dict(script_path=str(script), script_text=text, history_policy=history_policy,
                     cron_argv=[str(hermes_path), 'cron', 'create', 'every 1m', prompt, '--name', 'task-coach', '--skill', 'task-coach', '--script', str(script.relative_to(profile / 'scripts')), '--deliver', 'local', '--failure-deliver', 'local', '--paused'],
                     inbound_instruction=instruction, initially_paused=True, live_verified=False)
 
@@ -1144,8 +1371,8 @@ def validate_pages(pages, route, anchor, now, *, recovery_start=None):
 
 def _validate_pages(pages, route, anchor, now, *, recovery_start=None):
     """Validate agent-captured newest-to-oldest Discord fetch_messages pages."""
-    if not isinstance(pages, list) or not 1 <= len(pages) <= 20:
-        raise ValueError('history requires 1..20 pages')
+    if not isinstance(pages, list) or len(pages) != 1:
+        raise ValueError('history budget requires exactly one page')
     messages, seen, before = [], set(), None
     found = False
     for page in pages:
@@ -1156,8 +1383,18 @@ def _validate_pages(pages, route, anchor, now, *, recovery_start=None):
             raise ValueError('history is stale; refresh from latest')
         result = page['result']
         batch = result.get('messages')
+        limits = [25]
+        for envelope in (page, result):
+            if 'limit' in envelope:
+                limit = envelope['limit']
+                if type(limit) is not int or not 1 <= limit <= 25:
+                    raise ValueError('invalid history fetch limit')
+                limits.append(limit)
+        effective_limit = min(limits)
+        if isinstance(batch, list) and len(batch) > effective_limit:
+            raise ValueError('history count exceeds effective fetch limit')
         minimum = 0 if recovery_start is not None else 1
-        if result.get('error') or not isinstance(batch, list) or not minimum <= len(batch) <= 100:
+        if result.get('error') or not isinstance(batch, list) or not minimum <= len(batch) <= 25:
             raise ValueError('history unavailable or incomplete')
         if 'count' in result and (type(result['count']) is not int or result['count'] != len(batch)):
             raise ValueError('history count does not match messages')
@@ -1197,13 +1434,13 @@ def _validate_pages(pages, route, anchor, now, *, recovery_start=None):
                 if recovery_start is None:
                     break
         if recovery_start is not None:
-            if len(batch) < 100 and page is not pages[-1]:
+            if len(batch) < effective_limit and page is not pages[-1]:
                 raise ValueError('history continues after end of history')
-        if recovery_start is None and not found and len(batch) != 100:
+        if recovery_start is None and not found and len(batch) != 25:
             raise ValueError('history ended without exact anchor')
     if not found:
         raise ValueError('history budget exhausted without anchor')
-    if recovery_start is not None and len(batch) == 100 and instant(messages[-1]['timestamp']) >= recovery_start:
+    if recovery_start is not None and len(batch) == effective_limit and instant(messages[-1]['timestamp']) >= recovery_start:
         raise ValueError('lost-response history coverage must reach before attempt start or end of history')
     return messages
 
@@ -1211,6 +1448,16 @@ def _validate_pages(pages, route, anchor, now, *, recovery_start=None):
 def add_parser(commands):
     runtime = commands.add_parser('runtime', help='Native Hermes integration; explicit setup required')
     operations = runtime.add_subparsers(dest='runtime_command', required=True)
+    preference = operations.add_parser('history-preference', help='Read or explicitly change exact-route Discord history permission (default OFF)')
+    choice = preference.add_mutually_exclusive_group()
+    choice.add_argument('--enable', action='store_true')
+    choice.add_argument('--disable', action='store_true')
+    preference.add_argument('--route', type=json.loads)
+    preference.add_argument('--confirm-history', action='store_true')
+    plan = operations.add_parser('history-plan', help='Declare one explicit bounded on-demand history request; never fetches')
+    plan.add_argument('--purpose', choices=('reply-recovery', 'delivery-verification'), required=True)
+    plan.add_argument('--target', required=True)
+    plan.add_argument('--confirm-history', action='store_true')
     for name in ('preflight', 'status'):
         operations.add_parser(name)
     inbound = operations.add_parser('record-engagement', help='Agent-mediated explicit intent from exact trusted native inbound metadata; no history required')
@@ -1246,6 +1493,7 @@ def add_parser(commands):
             operation.add_argument('--hermes', required=True, help='Absolute native Hermes executable')
         else:
             operation.add_argument('--pages-file', type=Path, required=True)
+            operation.add_argument('--history-plan-file', type=Path, required=True)
             if name == 'confirm':
                 operation.add_argument('--message-id')
     resolve = operations.add_parser('resolve-clarification', help='Normal-inbound explicit owner selection; never invent a reply reference')
@@ -1254,11 +1502,13 @@ def add_parser(commands):
     resolve.add_argument('--task-id', type=int, required=True)
     resolve.add_argument('--selection-message-id', required=True)
     resolve.add_argument('--pages-file', type=Path, required=True)
+    resolve.add_argument('--history-plan-file', type=Path, required=True)
     dismiss = operations.add_parser('dismiss-clarification', help='Discard one pending question on explicit owner intent; never cancel tasks')
     dismiss.add_argument('--binding', type=json.loads, required=True)
     dismiss.add_argument('--clarification-id', required=True)
     dismiss.add_argument('--dismissal-message-id', required=True)
     dismiss.add_argument('--pages-file', type=Path, required=True)
+    dismiss.add_argument('--history-plan-file', type=Path, required=True)
     for name in ('context', 'engagement'):
         operation = operations.add_parser(name)
         operation.add_argument('--binding', type=json.loads, required=True)
@@ -1266,11 +1516,17 @@ def add_parser(commands):
         if name == 'engagement':
             operation.add_argument('--inbound-message-id', help='Exact captured owner message; required with --reply-to-message-id')
             operation.add_argument('--pages-file', type=Path, required=True)
+            operation.add_argument('--history-plan-file', type=Path, required=True)
 
 
 def run_cli(directory, args):
     driver = Driver(directory)
     operation = args.runtime_command
+    if operation == 'history-plan':
+        return driver.history_plan(purpose=args.purpose, target=args.target, confirm=args.confirm_history)
+    if operation == 'history-preference':
+        return driver.history_preference(enabled=True if args.enable else False if args.disable else None,
+            route=args.route, confirm=args.confirm_history)
     if operation == 'record-engagement':
         return driver.record_engagement(binding=args.binding, owner=args.owner,
             message_id=args.message_id, event_token=args.event_token, task_id=args.task_id,
@@ -1297,15 +1553,40 @@ def run_cli(directory, args):
         return driver.dispatch(args.event_token, args.fence, hermes=args.hermes)
     if operation == 'context':
         return driver.context(args.binding, reply_to_message_id=args.reply_to_message_id)
-    pages = json.loads(args.pages_file.read_text(encoding='utf-8'))
-    if operation == 'resolve-clarification':
-        return driver.resolve_clarification(binding=args.binding, clarification_id=args.clarification_id,
-            task_id=args.task_id, selection_message_id=args.selection_message_id, pages=pages)
-    if operation == 'dismiss-clarification':
-        return driver.dismiss_clarification(binding=args.binding, clarification_id=args.clarification_id,
-            dismissal_message_id=args.dismissal_message_id, pages=pages)
-    if operation == 'engagement':
-        return driver.engagement(args.binding, pages, reply_to_message_id=args.reply_to_message_id, inbound_message_id=args.inbound_message_id)
-    if operation == 'confirm':
-        return driver.confirm(args.event_token, args.fence, pages, message_id=args.message_id)
-    return driver.observe(args.event_token, args.fence, pages)
+    with driver._directory_lock():
+        # OFF is checked before even opening the request file. No authorization
+        # snapshot escapes this lease, including bounded capture loading.
+        driver._require_history()
+        request = _bounded_json_file(args.history_plan_file, 8192)
+        values = dict(vars(args), history_plan=request)
+        values['token'] = values.get('event_token')
+        method = operation.replace('-', '_')
+        driver._authorize_ingress(method, values, capture=False)
+        pages = _bounded_json_file(args.pages_file, request['max_payload_bytes'])
+        if operation == 'resolve-clarification':
+            return driver.resolve_clarification(binding=args.binding, clarification_id=args.clarification_id,
+                task_id=args.task_id, selection_message_id=args.selection_message_id, pages=pages, history_plan=request)
+        if operation == 'dismiss-clarification':
+            return driver.dismiss_clarification(binding=args.binding, clarification_id=args.clarification_id,
+                dismissal_message_id=args.dismissal_message_id, pages=pages, history_plan=request)
+        if operation == 'engagement':
+            return driver.engagement(args.binding, pages, reply_to_message_id=args.reply_to_message_id,
+                inbound_message_id=args.inbound_message_id, history_plan=request)
+        if operation == 'confirm':
+            return driver.confirm(args.event_token, args.fence, pages, message_id=args.message_id, history_plan=request)
+        return driver.observe(args.event_token, args.fence, pages, history_plan=request)
+
+
+def _bounded_json_file(path, maximum):
+    # stat rejects huge files without opening them; bounded read also fences
+    # growth/replacement between stat and read. No raw capture is loaded whole.
+    if path.stat().st_size > maximum:
+        raise ValueError('history file byte budget exceeded')
+    with path.open('rb') as stream:
+        raw = stream.read(maximum + 1)
+    if len(raw) > maximum:
+        raise ValueError('history file byte budget exceeded')
+    try:
+        return json.loads(raw)
+    except (ValueError, UnicodeError, RecursionError):
+        raise ValueError('malformed history JSON') from None
