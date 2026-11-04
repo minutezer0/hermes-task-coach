@@ -46,7 +46,6 @@ class InstalledSkillTest(unittest.TestCase):
         self.cli('setup', '--timezone', 'UTC')
         route = dict(binding=dict(owner='fictional-owner', profile='fictional-profile', account='fictional-account', chat='123', thread='none'), platform='discord', destination='discord:123', channel_id='123', bot_id='456')
         self.cli('runtime', 'configure', '--route', json.dumps(route), '--confirm-setup')
-        self.assertEqual(self.cli('runtime', 'upgrade-local-first', '--confirm-upgrade'), {'after_day': None})
         report = self.cli('runtime', 'capabilities', '--history-availability', 'unavailable')
         self.assertTrue(report['local_first'])
         self.assertTrue(report['degraded'])

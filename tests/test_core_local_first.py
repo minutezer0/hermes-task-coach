@@ -17,8 +17,8 @@ class LocalFirstTest(unittest.TestCase):
         runtime = Driver(self.data)
         runtime.coach.rng = __import__('random').Random(1)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
-        self.assertTrue(hasattr(runtime, 'upgrade_local_first'), 'explicit local-first upgrade missing')
-        runtime.upgrade_local_first(confirm=True, now='2030-01-07T08:00:00Z')
+        self.assertEqual(runtime.status()['local_first'], {'after_day': None},
+                         'fresh runtimes must default local-first without an upgrade command')
         return runtime
 
     def sender(self):
@@ -483,6 +483,7 @@ class LocalFirstTest(unittest.TestCase):
     def test_legacy_upgrade_preserves_day_and_allows_next_day(self):
         from task_coach.driver import Driver
         runtime = Driver(self.data)
+        fixtures.persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
         runtime.preflight(now='2030-01-07T08:00:00Z')
         old = runtime.coach.status()['episode']

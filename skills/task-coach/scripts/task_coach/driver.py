@@ -1,6 +1,6 @@
 """Native Hermes orchestration. History is supplied by the agent, not a bot SDK."""
 from contextlib import closing, contextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -25,7 +25,7 @@ class Driver:
                 policy = state['local_first']
                 if not isinstance(policy, dict) or set(policy) != {'after_day'}:
                     raise ValueError
-                if policy['after_day'] is not None and datetime.fromisoformat(policy['after_day']).date().isoformat() != policy['after_day']:
+                if policy['after_day'] is not None and date.fromisoformat(policy['after_day']).isoformat() != policy['after_day']:
                     raise ValueError
             if state['route'] is not None:
                 validate_binding(state['route']['binding'])
@@ -206,8 +206,38 @@ class Driver:
         self.coach = Coach(data_dir, opportunity_minutes=10)
         self.directory = Path(data_dir)
 
+    def _policy_boundary(self, runtime):
+        """Read/validate compatibility inputs under the already-held directory lock.
+
+        Never use engine transactions here: they write and may initialize storage.
+        The preserved day comes from the persisted episode, not the upgrade clock.
+        """
+        from .coaching import STATE_SCHEMA, validate_state
+        self.coach.config()
+        if runtime['route'] is not None:
+            self.validate_route(runtime['route'])
+        path = self.directory / 'coach.sqlite3'
+        for suffix in ('', '-journal', '-wal', '-shm'):
+            safe_path(Path(str(path) + suffix))
+        if not path.exists():
+            return None
+        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+            schema = db.execute("SELECT type,name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").fetchall()
+            if (db.execute('PRAGMA user_version').fetchone()[0] != 1 or len(schema) != 1
+                    or schema[0][:2] != ('table', 'state')
+                    or ''.join(schema[0][2].split()).lower() != ''.join(STATE_SCHEMA.split()).lower()
+                    or db.execute('PRAGMA table_xinfo(state)').fetchall() != [(0, 'id', 'INTEGER', 0, None, 1, 0), (1, 'value', 'TEXT', 1, None, 0, 0)]
+                    or db.execute('PRAGMA index_list(state)').fetchall()):
+                raise ValueError('incompatible coaching state schema or version')
+            rows = db.execute('SELECT id,value FROM state').fetchall()
+            if len(rows) != 1 or rows[0][0] != 1:
+                raise ValueError('invalid coaching state')
+            engine = json.loads(rows[0][1])
+            validate_state(engine)
+            return engine['episode']['day'] if engine['episode'] else None
+
     @contextmanager
-    def transaction(self, *, readonly=False):
+    def transaction(self, *, readonly=False, adopt=True):
         # Same directory lock as the engine, but never nest these transactions.
         import fcntl
         safe_path(self.directory, True)
@@ -223,14 +253,15 @@ class Driver:
             if fresh:
                 created = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 os.close(created)
-            target = path.resolve().as_uri() + '?mode=ro' if readonly else path
-            with closing(sqlite3.connect(target, uri=readonly)) as db:
-                db.execute('BEGIN' if readonly else 'BEGIN IMMEDIATE')
+            read_connection = readonly and not adopt
+            target = path.resolve().as_uri() + '?mode=ro' if read_connection else path
+            with closing(sqlite3.connect(target, uri=read_connection)) as db:
+                db.execute('BEGIN' if read_connection else 'BEGIN IMMEDIATE')
                 try:
                     if fresh:
                         db.execute(SCHEMA)
                         db.execute('PRAGMA user_version=1')
-                        state = dict(route=None, outbox={})
+                        state = dict(route=None, outbox={}, local_first=dict(after_day=None))
                     else:
                         schema = db.execute("SELECT sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").fetchall()
                         if db.execute('PRAGMA user_version').fetchone()[0] != 1 or schema != [(SCHEMA,)]:
@@ -240,10 +271,16 @@ class Driver:
                             raise ValueError('invalid runtime state')
                         state = json.loads(rows[0][1])
                     self.validate_state(state)
+                    original = None if fresh else json.dumps(state)
+                    if adopt and 'local_first' not in state:
+                        state['local_first'] = dict(after_day=self._policy_boundary(state))
+                        self.validate_state(state)
+                    adopted = json.dumps(state)
                     yield state
                     self.validate_state(state)
-                    if not readonly:
-                        db.execute('INSERT OR REPLACE INTO runtime VALUES (1,?)', (json.dumps(state),))
+                    result = adopted if readonly else json.dumps(state)
+                    if result != original:
+                        db.execute('INSERT OR REPLACE INTO runtime VALUES (1,?)', (result,))
                     db.commit()
                 except BaseException:
                     db.rollback()
@@ -366,16 +403,17 @@ class Driver:
                 state.update(episode=episode, last_tick=now.isoformat(), recent=(state['recent'] + [task['id']])[-7:])
                 return dict(test_prepared=True, wakeAgent=False, episode=episode)
 
-    def capabilities(self, *, history_available=None, history_error=None):
+    def capabilities(self, *, history_available=None, history_error=None, now=None):
         """Caller reports optional native tool inventory/attempt; core discovers none."""
         if history_available is not None and type(history_available) is not bool:
             raise ValueError('history availability must be boolean or unknown')
         if history_error is not None and (not isinstance(history_error, str) or not history_error.strip()):
             raise ValueError('history error must be nonempty text')
         state = 'unavailable' if history_error or history_available is False else 'available' if history_available else 'unknown'
-        return dict(local_first=self.local_first(),
+        local_first = self.local_first(now=now if now is not None else datetime.now(UTC))
+        return dict(local_first=local_first,
                     history=dict(state=state, source='caller-inventory-or-attempt', error=history_error),
-                    degraded=state != 'available', history_required=not self.local_first())
+                    degraded=state != 'available', history_required=not local_first)
 
     def record_engagement(self, *, binding, owner, message_id, event_token, task_id,
                           cycle_id, intent, now=None):
@@ -423,31 +461,23 @@ class Driver:
             return result
 
     def upgrade_local_first(self, *, confirm=False, now=None):
-        """Explicit runtime opt-in; never reinterpret or replay a legacy episode."""
-        if not confirm:
-            raise ValueError('explicit local-first upgrade confirmation required')
-        now = instant(now or datetime.now(UTC))
+        """Backward-compatible alias; ordinary runtime use adopts automatically.
+
+        The old confirmation flag remains accepted but is no longer required.
+        """
         with self.transaction() as runtime:
-            if runtime['route'] is None:
-                raise ValueError('runtime setup not confirmed')
-            if 'local_first' not in runtime:
-                with self.coach._transaction() as engine:
-                    episode = engine['episode']
-                    runtime['local_first'] = dict(after_day=episode['day'] if episode else None)
             return runtime['local_first']
 
     def local_first(self, *, now=None):
-        runtime = self.status()
-        policy = runtime.get('local_first')
-        if policy is None:
-            return False
-        episode = self.coach.status()['episode']
-        if now is not None:
-            from zoneinfo import ZoneInfo
-            day = instant(now).astimezone(ZoneInfo(self.coach.config()['timezone'])).date().isoformat()
-        else:
-            day = episode['day'] if episode else None
-        return policy['after_day'] is None or day is not None and day > policy['after_day']
+        with self.transaction(readonly=True) as runtime:
+            policy = runtime.get('local_first')
+            if policy is None:
+                return False
+            day = self._policy_boundary(runtime)
+            if now is not None:
+                from zoneinfo import ZoneInfo
+                day = instant(now).astimezone(ZoneInfo(self.coach.config()['timezone'])).date().isoformat()
+            return policy['after_day'] is None or day is not None and day > policy['after_day']
 
     def preflight(self, *, now=None):
         runtime = self.status()
@@ -1027,7 +1057,14 @@ class Driver:
         text += 'except Exception:\n    pass\nprint(json.dumps(result))\n'
         prompt = ('Load task-coach and follow its native runtime protocol. Use helper ' + str(helper_path) + ' with --data-dir ' + str(self.directory.resolve()) + '. Re-run runtime preflight. For a kind:clarification intent compose one question for the exact returned clarification_ids using candidate titles, not a task check-in. Otherwise compose one human check-in only for its current task. For followups and clarification retries fetch and validate fresh complete Discord history through the returned previous receipt before dispatch. Fresh owner activity requires normal inbound clarification handling, never automatic task engagement. Use runtime draft/observe/dispatch/confirm; native Hermes executable ' + str(hermes_path) + '. Never send directly or retry uncertain attempts. No final chat delivery: delivery is handled by the helper.')
         instruction = ('For normal inbound messages ONLY matching the explicitly confirmed Task Coach binding, load task-coach and use the trusted inbound owner/profile/account/chat/thread with runtime context --binding. If trusted inbound metadata exposes an explicit reply target, pass --reply-to-message-id to context and pass both --reply-to-message-id and --inbound-message-id to runtime engagement with fresh history through the exact target receipt. Otherwise capture fresh history through the latest confirmed receipt from runtime status and run runtime engagement; never infer a missing reply target from text or history order. Follow the documented reply_targets capture interface only for trusted metadata. Null context or ambiguous-engagement is not task attribution: before changing task data or marking engagement, ask which task using the pending clarification candidate titles, not raw IDs. The durable pending hold blocks ordinary task sends. Initial questions are normal inbound conversation; clarification retries are allowed only through due native kind:clarification intents with draft/observe/dispatch/confirm and fresh raw history, never direct reminders. Unanswered pending questions retire at the next allowed notification window with audit retained and no task changes; resolving/resolved choices, pause/failure/uncertain sends and safety blocks are never cleared. Explicit replies to retry receipts route to those questions, not task engagement; never reclassify retired originals or processed response IDs. On an explicit owner choice use runtime resolve-clarification --binding with --clarification-id, --task-id for the selected snapshot, --selection-message-id from trusted inbound context and --pages-file containing fresh raw history through the oldest captured candidate receipt. This is explicit-owner-selection provenance, not a Discord reply reference; never add it to reply_targets. Inspect pending records before engagement on a selection or dismissal turn. If the owner explicitly says "never mind" or "dismiss that question", use runtime dismiss-clarification --binding with the exact --clarification-id, trusted later --dismissal-message-id and --pages-file containing fresh raw history through the oldest candidate receipt. No task selection, edit, completion, snooze, engagement, task cancellation or global pause is implied. Read back runtime status. Say "I will not apply that reply; both tasks are unchanged" only after success and when still true; otherwise say "I will not apply that reply or make any task changes". If the owner just says "cancel", ask whether they mean dismiss the question, cancel a named task or pause all check-ins; do not guess. If several holds exist, ask which question by candidate titles. Dismissal permits edited/deleted originals and changed/unavailable candidates but refuses a durable resolving or resolved choice; never undo suppression or edit safety records. Never fabricate inbound IDs, captures or reply references. Preserve all other delivery blocks, never replay missed sends, and never fall back to the latest task. Continue only a returned task with one useful next-step question; never mark it done without permission. Honor explicit pause via coach pause. Do not apply this instruction to other users or destinations.')
-        if (self.directory / 'outbox.sqlite3').exists() and 'local_first' in self.status():
+        effective_local_first = True
+        if (self.directory / 'outbox.sqlite3').exists():
+            # Planning is a read-only preview, not the first-use migration trigger.
+            with self.transaction(readonly=True, adopt=False) as runtime:
+                day = self._policy_boundary(runtime)
+                boundary = runtime.get('local_first', dict(after_day=day))['after_day']
+                effective_local_first = boundary is None or day is not None and day > boundary
+        if effective_local_first:
             prompt = ('Load task-coach. Use helper ' + str(helper_path) + ' with --data-dir ' + str(self.directory.resolve())
                 + '. Re-run runtime preflight. Local eligibility, recorded engagement, windows, budgets and pause authorize openers AND followups. '
                 'History/readback is OPTIONAL. Inspect caller native tool inventory; report runtime capabilities --history-availability unknown/unavailable/available '
@@ -1046,6 +1083,13 @@ class Driver:
                 'If attribution or requested edits are ambiguous, ask which task before editing or recording engagement; never globally freeze scheduled work. '
                 'Preserve immutable clarification outcomes; never undo resolving/resolved choices or uncertain attempts. '
                 'Unknown/unrecorded replies can receive bounded followups. Pause uses coach pause and readback; task edits require separate explicit intent.')
+        if not effective_local_first:
+            transition = ('Check the effective policy on each turn: re-run runtime preflight when scheduled, then runtime capabilities. '
+                'The following history-gated instructions apply ONLY while capabilities reports local_first:false for the preserved legacy episode day. '
+                'On later local-first days use the local-first scheduled/inbound lifecycle in the skill: history/readback is optional for openers AND followups, '
+                'use runtime draft/dispatch and trusted runtime record-engagement; never revive legacy slots or retry attempted/uncertain events. ')
+            prompt = transition + prompt
+            instruction = transition + instruction
         return dict(script_path=str(script), script_text=text,
                     cron_argv=[str(hermes_path), 'cron', 'create', 'every 1m', prompt, '--name', 'task-coach', '--skill', 'task-coach', '--script', str(script.relative_to(profile / 'scripts')), '--deliver', 'local', '--failure-deliver', 'local', '--paused'],
                     inbound_instruction=instruction, initially_paused=True, live_verified=False)
@@ -1176,8 +1220,8 @@ def add_parser(commands):
     inbound.add_argument('--task-id', type=int, required=True)
     inbound.add_argument('--cycle-id')
     inbound.add_argument('--intent', choices=('engaged', 'skip-for-now'), required=True)
-    upgrade = operations.add_parser('upgrade-local-first', help='Explicit runtime policy opt-in; retains legacy current-day audit and stops')
-    upgrade.add_argument('--confirm-upgrade', action='store_true')
+    upgrade = operations.add_parser('upgrade-local-first', help='Idempotent alias for automatic first-use runtime policy adoption')
+    upgrade.add_argument('--confirm-upgrade', action='store_true', help='Accepted for compatibility; no longer required')
     capability = operations.add_parser('capabilities', help='Report caller optional history inventory/attempt; no external discovery')
     capability.add_argument('--history-availability', choices=('unknown', 'unavailable', 'available'), default='unknown')
     capability.add_argument('--history-error')

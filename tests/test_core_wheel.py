@@ -58,7 +58,6 @@ class WheelArtifactTest(unittest.TestCase):
             skill = venv / "share" / "task-coach" / "skill"
             route = dict(binding=dict(owner='fictional-owner', profile='fictional-profile', account='fictional-account', chat='123', thread='none'), platform='discord', destination='discord:123', channel_id='123', bot_id='456')
             run(command + ['runtime', 'configure', '--route', json.dumps(route), '--confirm-setup'], env=env)
-            run(command + ['runtime', 'upgrade-local-first', '--confirm-upgrade'], env=env)
             capability = json.loads(run(command + ['runtime', 'capabilities', '--history-availability', 'unavailable'], env=env).stdout)
             self.assertTrue(capability['local_first'])
             self.assertTrue(capability['degraded'])

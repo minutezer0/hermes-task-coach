@@ -130,14 +130,24 @@ class RestartTest(unittest.TestCase):
         self.stopped_empty(runtime)
         route = runtime.status()['route']
         import copy
+        import json
+        import sqlite3
+        from contextlib import closing
+        valid = runtime.status()
         for invalid in (None, dict(route, destination='discord:999'), dict(route, bot_id=BINDING['owner']), dict(route, platform='other'), dict(route, binding=dict(BINDING, owner='different-owner'))):
             with self.subTest(route=invalid):
-                with runtime.transaction() as state:
-                    state['route'] = copy.deepcopy(invalid)
+                # Corrupt persisted input directly: normal default-policy writes
+                # now reject invalid routes before they can be stored.
+                malformed = dict(valid, route=copy.deepcopy(invalid))
+                with closing(sqlite3.connect(self.data / 'outbox.sqlite3')) as db:
+                    db.execute('UPDATE runtime SET value=?', (json.dumps(malformed),))
+                    db.commit()
                 before = runtime.coach.status()
+                audit = (self.data / 'outbox.sqlite3').read_bytes()
                 with self.assertRaises(ValueError):
                     runtime.restart(confirm=True, now=self.now)
                 self.assertEqual(runtime.coach.status(), before)
+                self.assertEqual((self.data / 'outbox.sqlite3').read_bytes(), audit)
 
     def test_restart_refuses_without_current_task_or_future_window(self):
         runtime = self.configured()

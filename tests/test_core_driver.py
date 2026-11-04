@@ -7,6 +7,28 @@ import json
 from pathlib import Path
 
 
+def persist_legacy_runtime(runtime, *, binding=BINDING, now='2030-01-07T08:00:00Z'):
+    """Persist the actual rc.4 shape for legacy evidence-contract fixtures.
+
+    Historical stores already have their Jan 7 episode; future fresh stores do
+    not use this helper. Ordinary runtime use must adopt, not bypass migration.
+    """
+    import sqlite3
+    from contextlib import closing
+    from task_coach.driver import SCHEMA
+    path = runtime.directory / 'outbox.sqlite3'
+    if path.exists():
+        return
+    if not (runtime.directory / 'coach.sqlite3').exists():
+        runtime.coach.tick(now=now, binding=binding)
+    with closing(sqlite3.connect(path)) as db:
+        db.execute(SCHEMA)
+        db.execute('PRAGMA user_version=1')
+        db.execute('INSERT INTO runtime VALUES(1,?)', (json.dumps(dict(route=None, outbox={})),))
+        db.commit()
+    path.chmod(0o600)
+
+
 class RuntimeTest(unittest.TestCase):
     setUp = fixtures.EngineTest.setUp
     cli = fixtures.EngineTest.cli
@@ -32,6 +54,7 @@ class RuntimeTest(unittest.TestCase):
         for malformed in (None, [], 'not-a-route'):
             with self.subTest(route=malformed), self.assertRaises(ValueError):
                 runtime.configure(malformed, confirm=True)
+        persist_legacy_runtime(runtime)
         runtime.configure(route, confirm=True)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic opener', now=now)
@@ -46,6 +69,7 @@ class RuntimeTest(unittest.TestCase):
         import os
         engine, events = self.prepare()
         runtime = Driver(self.data)
+        persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic opener', now=now)
@@ -84,6 +108,7 @@ class RuntimeTest(unittest.TestCase):
                     (self.data / filename).unlink(missing_ok=True)
                 engine, events = self.prepare()
                 runtime = Driver(self.data)
+                persist_legacy_runtime(runtime)
                 runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
                 now = datetime.fromisoformat(events[0]['slot'])
                 draft = runtime.draft(events[0]['token'], body, now=now)
@@ -99,6 +124,7 @@ class RuntimeTest(unittest.TestCase):
         from task_coach.driver import Driver
         engine, events = self.prepare()
         runtime = Driver(self.data)
+        persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
         first = datetime.fromisoformat(events[0]['slot'])
         engine.tick(now=first, binding=BINDING)
@@ -145,6 +171,7 @@ class RuntimeTest(unittest.TestCase):
         from task_coach.driver import Driver
         runtime = Driver(self.data)
         engine, events = self.prepare()
+        persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic opener', now=now)
@@ -210,6 +237,7 @@ class RuntimeTest(unittest.TestCase):
         from task_coach.driver import Driver
         runtime = Driver(self.data)
         engine, events = self.prepare()
+        persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic uncertain opener', now=now)
@@ -228,6 +256,7 @@ class RuntimeTest(unittest.TestCase):
         from task_coach.driver import Driver
         engine, events = self.prepare()
         runtime = Driver(self.data)
+        persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic lost response', now=now)
@@ -351,6 +380,7 @@ class RuntimeTest(unittest.TestCase):
                     (self.data / filename).unlink(missing_ok=True)
                 engine, events = self.prepare()
                 runtime = Driver(self.data)
+                persist_legacy_runtime(runtime)
                 runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
                 now = datetime.fromisoformat(events[0]['slot'])
                 draft = runtime.draft(events[0]['token'], 'Synthetic failure', now=now)
@@ -369,6 +399,7 @@ class RuntimeTest(unittest.TestCase):
         import sys
         engine, events = self.prepare()
         runtime = Driver(self.data)
+        persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
         history = []
         for index in (0, 1):
@@ -398,6 +429,7 @@ class RuntimeTest(unittest.TestCase):
         from task_coach.driver import Driver
         runtime = Driver(self.data)
         with self.assertRaisesRegex(ValueError, 'binding.*channel'):
+            persist_legacy_runtime(runtime)
             runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:999', channel_id='999', bot_id='456'), confirm=True)
 
     def test_history_validates_pagination_route_owner_and_declared_totals(self):
@@ -428,6 +460,7 @@ class RuntimeTest(unittest.TestCase):
         import sqlite3, contextlib
         engine, events = self.prepare()
         runtime = Driver(self.data)
+        persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic draft', now=now)
@@ -446,6 +479,7 @@ class RuntimeTest(unittest.TestCase):
         from task_coach.driver import Driver
         runtime = Driver(self.data)
         engine, events = self.prepare()
+        persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
         now = datetime.fromisoformat(events[0]['slot'])
         draft = runtime.draft(events[0]['token'], 'Synthetic delayed delivery', now=now)

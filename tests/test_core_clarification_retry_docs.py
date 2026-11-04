@@ -26,11 +26,12 @@ class RetryDocumentationTest(unittest.TestCase):
         self.assertIn('first preflight', text)
         self.assertNotIn('explicit choice/dismissal of its own question, never another question.', text)
 
-    def test_generated_native_instructions_branch_on_clarification_intent(self):
+    def test_generated_fresh_native_instructions_use_default_local_first_policy(self):
         plan = Driver(ROOT).native_plan('/fictional/profile', python='/fictional/python', helper='/fictional/helper', hermes='/fictional/hermes')
         prompt = plan['cron_argv'][4]
-        self.assertIn('clarification', prompt)
-        self.assertIn('candidate titles', prompt)
-        self.assertIn('observe', prompt)
-        self.assertIn('next allowed notification window', plan['inbound_instruction'])
+        self.assertIn('openers AND followups', prompt)
+        self.assertIn('History/readback is OPTIONAL', prompt)
+        self.assertIn('runtime record-engagement', plan['inbound_instruction'])
+        self.assertIn('ask which task', plan['inbound_instruction'])
+        self.assertNotIn('fresh complete Discord history', prompt)
         self.assertNotIn('never via unattended sends', plan['inbound_instruction'])

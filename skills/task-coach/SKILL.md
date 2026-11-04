@@ -20,12 +20,19 @@ route. Synthetic tests and saved settings are not live platform verification.
 
 ## Local-first proactive policy (0.1.0rc5)
 
-After route confirmation, explicitly opt in with `runtime upgrade-local-first
---confirm-upgrade` in the approved data scope. This changes runtime policy, not
-task schema, installation, cron state or send authorization. Quiesce old writers
-before updating code; do not run older helpers after opting in. Code replacement,
-task `migrate`, runtime opt-in, artifact installation and live testing are separate
-approvals. Never use installation/update verification to send to a real route.
+Fresh runtime stores use local-first policy by default. After a code update,
+known existing runtime stores automatically adopt it on first ordinary runtime
+use (including `runtime status`), after validating saved config, runtime, route
+and engine state. No policy opt-in or second approval is needed. The compatibility
+alias `runtime upgrade-local-first` remains idempotent; its old `--confirm-upgrade`
+flag is accepted but unnecessary. Help and `runtime native-plan` do not adopt policy.
+
+This changes only runtime policy, not task schema, saved tasks/settings/engine,
+installation, cron state or send authorization. Quiesce old writers before updating
+code; do not run older helpers afterward. Recurrence still requires explicit task
+`migrate` on legacy task databases. Delivery route/setup, artifact installation,
+live testing and ongoing activation remain separately explicit: default policy
+NEVER means automatic sending. Never send to a real route during update verification.
 
 Local task eligibility, recorded engagement, windows, spacing, budgets and global
 pause authorize **both openers and followups**. Native Hermes send remains the only
@@ -65,8 +72,11 @@ tradeoff, not an impossible cross-session reply-suppression guarantee.
 Compatibility is explicit: existing episodes, IDs, outbox and clarification audits
 are retained, not reset/replayed. An existing episode keeps legacy policy for its
 whole local day; local-first begins on a later day. No current-day stopped episode
-or missed slot is revived. With no episode, opt-in applies immediately. Malformed
-or unknown data refuses, never silently migrates. Old attempts are never resent.
+or missed slot is revived. The boundary is the saved episode's local date, not the
+command clock; with no episode, adoption applies immediately without creating one.
+Already-local-first policy is untouched. Malformed or unknown data refuses before
+writing, preserving bytes, mtimes and sidecars rather than repairing it. Old
+attempts are never resent; existing receipt and clarification audits stay intact.
 Missed slots stop that task sequence; there is no catchup, backlog or budget
 expansion. Completion, cancellation, snooze, global pause, authorized route, current
 recurrence cycle and atomic write/send fences remain hard controls.
@@ -103,8 +113,9 @@ recurrence cycle and atomic write/send fences remain hard controls.
 For install/update verification, check helper help/version, capability reporting,
 the exact generated wrapper/prompt/inbound instruction, initially paused cron and
 both local delivery targets by readback without invoking a user-store preflight.
-Re-generate approved native-plan artifacts after policy opt-in, not just code
-replacement. Keep recurring cron paused during any separately approved one-check-in
+Review and re-generate approved native-plan artifacts after code replacement;
+policy adoption itself never rewrites installed wrappers, cron or inbound instructions.
+Keep recurring cron paused during any separately approved one-check-in
 test. Report acceptance and independent verification separately, plus the untested
 live follow-up-suppression limit. Obtain separate ongoing activation approval.
 
@@ -252,7 +263,7 @@ restart as a test workaround. If an episode already exists, explain that immedia
 test preparation is unavailable; use only already-authorized ordinary due work or
 wait, rather than replacing tokens. See the runtime reference for the exact scope.
 On success, use the local-first preflight/draft/dispatch path above with the
-returned token after explicit policy opt-in; confirm/history is optional. The
+returned token under default local-first policy; confirm/history is optional. The
 preflight/draft/dispatch/confirm protocol below applies only to legacy policy.
 Do not send directly, retry uncertainty or bypass a refusal. Report accepted
 delivery separately from optional independent verification, and verify normal-inbound
@@ -393,8 +404,8 @@ remain conservatively held and require operator attention if the candidate chang
 
 ## Native scheduled-turn protocol (legacy policy only)
 
-The history-gated protocol in this section is retained only for stores without
-local-first opt-in and the preserved legacy episode day. It is **not** the rc5
+The history-gated protocol in this section is retained only for the preserved
+legacy episode day during automatic adoption. It is **not** the rc5
 local-first path above. Its pending/uncertain global locks and mandatory history
 requirements must never be imposed on local-first scheduling.
 

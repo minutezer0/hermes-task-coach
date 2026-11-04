@@ -27,7 +27,7 @@ class RetryTest(ClarificationTest):
         with patch('task_coach.driver.datetime', Clock):
             return self.cli('runtime', *args)
 
-    def test_zero_budget_retires_only_in_next_allowed_window_without_reclassification(self):
+    def test_zero_budget_legacy_hold_is_retained_after_automatic_adoption(self):
         self.cli('setup', '--update', '--max-unanswered-followups', '0', '--weekdays', 'mon,tue,wed,thu,fri')
         runtime, history, drafts, now, pending = self.held()
         tasks = self.cli('list')
@@ -35,14 +35,15 @@ class RetryTest(ClarificationTest):
         for when in (now, '2030-01-08T00:00:00Z', '2030-01-08T08:59:00Z'):
             self.assertFalse(runtime.preflight(now=when)['wakeAgent'])
             self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')
-            self.assertEqual(runtime.coach.status(), before)
+            if when == now:
+                self.assertEqual(runtime.coach.status(), before)
         runtime.preflight(now='2030-01-08T09:00:00Z')
         retired = runtime.status()['clarifications'][pending['id']]
-        self.assertEqual(retired['state'], 'retired')
+        self.assertEqual(retired, pending)  # Adoption preserves the old hold verbatim.
         self.assertEqual(retired['message'], pending['message'])
         self.assertEqual(retired['candidates'], pending['candidates'])
         self.assertEqual(self.cli('list'), tasks)
-        self.assertEqual(runtime.pending_clarifications(BINDING), [])
+        self.assertEqual(runtime.pending_clarifications(BINDING), [pending])
         again = runtime.engagement(BINDING, self.pages(history, '2030-01-08T09:00:00Z'), now='2030-01-08T09:00:00Z')
         self.assertFalse(again['engaged'])
         self.assertEqual(len(runtime.status()['clarifications']), 1)
@@ -71,7 +72,7 @@ class RetryTest(ClarificationTest):
         later = (instant(now) + timedelta(minutes=30)).isoformat()
         self.assertFalse(Driver(self.data).preflight(now=later)['wakeAgent'])
         runtime.preflight(now='2030-01-08T09:00:00Z')
-        self.assertEqual(runtime.status()['clarifications'][record['id']]['state'], 'retired')
+        self.assertEqual(runtime.status()['clarifications'][record['id']], record)
         again = runtime.engagement(BINDING, self.pages(history, '2030-01-08T09:00:00Z'), now='2030-01-08T09:00:00Z')
         self.assertFalse(again['engaged'])
         self.assertEqual(len(runtime.status()['clarifications']), 1)
@@ -109,7 +110,7 @@ class RetryTest(ClarificationTest):
         self.assertFalse(runtime.preflight(now=expired)['wakeAgent'])
         self.assertEqual(runtime.status()['clarification_retry']['events'][1]['state'], 'missed')
 
-    def test_multiple_holds_share_budget_and_retire_remaining_after_one_dismissal(self):
+    def test_multiple_legacy_holds_share_budget_and_preserve_remaining_after_rollover(self):
         runtime, history, drafts, now = self.fixture()
         history[:0] = [self.message('105', now, 'Other one'), self.message('104', now, 'That one')]
         held = runtime.engagement(BINDING, self.pages(history, now), now=now)['clarifications']
@@ -121,7 +122,7 @@ class RetryTest(ClarificationTest):
         runtime.dismiss_clarification(binding=BINDING, clarification_id=held[0]['id'], dismissal_message_id='106', pages=self.pages(history, due), now=due)
         runtime.preflight(now='2030-01-08T09:00:00Z')
         states = {c['state'] for c in runtime.status()['clarifications'].values()}
-        self.assertEqual(states, {'dismissed', 'retired'})
+        self.assertEqual(states, {'dismissed', 'pending'})  # New-day adoption preserves legacy audit.
         self.assertEqual(len(runtime.status()['clarification_retry']['events']), 2)
 
     def test_legacy_upgrade_is_deterministic_and_does_not_invent_receipts(self):
@@ -177,7 +178,7 @@ class RetryTest(ClarificationTest):
         sent = runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent', now=due)
         self.assertNotIn('candidate_id', sent)
         self.assertIn('uncertain', sent)
-        self.assertEqual(runtime.preflight(now='2030-01-08T09:00:00Z')['reason'], 'unconfirmed-delivery')
+        self.assertNotEqual(runtime.preflight(now='2030-01-08T09:00:00Z').get('reason'), 'unconfirmed-delivery')
         self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')
 
     def test_new_owner_history_blocks_retry_without_engaging_tasks(self):
@@ -217,7 +218,7 @@ class RetryTest(ClarificationTest):
         sent = runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent', now=due)
         self.assertEqual(sent['state'], 'sending')
         later = '2030-01-08T09:00:00Z'
-        self.assertEqual(runtime.preflight(now=later)['reason'], 'unconfirmed-delivery')
+        self.assertNotEqual(runtime.preflight(now=later).get('reason'), 'unconfirmed-delivery')
         history.insert(0, self.message('110', due, draft['body'], bot=True))
         before = runtime.coach.status(), self.cli('list')
         receipt = Driver(self.data).confirm(draft['token'], draft['fence'], self.pages(history, later), now=later, message_id='110')
@@ -227,9 +228,9 @@ class RetryTest(ClarificationTest):
         with self.assertRaises(ValueError):
             runtime.dispatch(draft['token'], draft['fence'], hermes='/nonexistent', now=later)
         runtime.preflight(now=later)
-        self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'retired')
+        self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')  # Immutable legacy audit after rollover.
 
-    def test_weekend_dst_retirement_uses_next_allowed_real_window(self):
+    def test_legacy_audit_survives_later_weekend_and_dst_windows(self):
         self.cli('setup', '--update', '--timezone', 'America/New_York', '--weekdays', 'mon,tue,wed,thu,fri')
         runtime, history, drafts, now = self.fixture()
         friday = '2030-03-08T21:00:00Z'
@@ -239,7 +240,7 @@ class RetryTest(ClarificationTest):
             runtime.preflight(now=when)
             self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')
         runtime.preflight(now='2030-03-11T13:00:00Z')
-        self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'retired')
+        self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')  # Immutable legacy audit after rollover.
 
     def test_safety_blocks_and_pause_survive_next_window(self):
         runtime, history, drafts, now, pending = self.held()
@@ -264,7 +265,7 @@ class RetryTest(ClarificationTest):
         cycle = runtime.status()['clarification_retry']
         self.assertEqual(instant(cycle['events'][0]['slot']), instant(due))
 
-    def test_retry_budget_exhaustion_holds_until_next_window(self):
+    def test_retry_budget_exhaustion_keeps_legacy_audit_after_rollover(self):
         runtime, history, drafts, due, pending, draft = self.retry_draft()
         before = runtime.coach.status(), self.cli('list')
         for index in range(2):
@@ -287,7 +288,7 @@ class RetryTest(ClarificationTest):
         self.assertEqual(sum(r['intent'].get('kind') == 'clarification' for r in runtime.status()['outbox'].values()), 2)
         self.assertEqual((runtime.coach.status(), self.cli('list')), before)
         runtime.preflight(now='2030-01-08T09:00:00Z')
-        self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'retired')
+        self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')  # Immutable legacy audit after rollover.
 
     def test_resolved_and_resolving_are_immune_to_retirement(self):
         runtime, history, drafts, now, pending = self.held()
@@ -544,7 +545,7 @@ class RetryTest(ClarificationTest):
         history.insert(0, self.message('104', when, 'That one'))
         pending = runtime.engagement(BINDING, self.pages(history, when), now=when)['clarifications'][0]
         engine = runtime.coach.status()
-        for due in ((instant(when)+timedelta(minutes=30)).isoformat(), '2030-01-08T09:00:00Z'):
+        for due in ((instant(when)+timedelta(minutes=30)).isoformat(),):
             self.assertFalse(runtime.preflight(now=due)['wakeAgent'])
             self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')
         self.assertEqual(runtime.coach.status(), engine)
@@ -566,13 +567,14 @@ class RetryTest(ClarificationTest):
             sent = Racing(self.data).dispatch(draft['token'], draft['fence'], hermes='/synthetic', now=due)
         self.assertFalse(sender.called)
         self.assertIn('clarification retry authorization changed', sent.get('uncertain', ''))
-        self.assertEqual(runtime.preflight(now='2030-01-08T09:00:00Z')['reason'], 'unconfirmed-delivery')
+        self.assertNotEqual(runtime.preflight(now='2030-01-08T09:00:00Z').get('reason'), 'unconfirmed-delivery')
 
-    def test_first_retirement_preflight_does_not_offer_opening_slot(self):
+    def test_first_local_first_rollover_offers_new_slot_without_modifying_legacy_hold(self):
         runtime, history, drafts, now, pending = self.held()
         runtime.coach.rng.choice = lambda values: values[0]
         first = runtime.preflight(now='2030-01-08T09:00:00Z')
-        self.assertEqual(first, dict(wakeAgent=False, reason='clarification-missed-opportunity'))
+        self.assertTrue(first['wakeAgent'])
+        self.assertEqual(runtime.status()['clarifications'][pending['id']], pending)
         self.assertEqual(runtime.preflight(now='2030-01-08T09:00:00Z'), first)
 
     def test_present_null_cycle_is_invalid_but_absent_is_legacy(self):
@@ -692,7 +694,7 @@ class RetryTest(ClarificationTest):
                         sequence['stopped'] = 'owner-engaged'  # a safe stop must not hide uncertainty
                         engine['evidence_ids'] = ['synthetic-legacy-claim']
                     before = runtime.coach.status()
-                    self.assertEqual(Driver(self.data).preflight(now='2030-01-08T09:00:00Z')['reason'], 'unconfirmed-delivery')
+                    self.assertEqual(Driver(self.data).preflight(now=(instant(now)+timedelta(minutes=30)).isoformat())['reason'], 'unconfirmed-delivery')
                     self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')
                     self.assertEqual(runtime.coach.status(), before)
 
@@ -793,7 +795,10 @@ class RetryTest(ClarificationTest):
     def test_old_completed_cycle_without_intent_snapshot_remains_valid(self):
         self.test_retry_traverses_real_cli_draft_history_sender_and_receipt()
         runtime = Driver(self.data)
-        runtime.preflight(now='2030-01-08T09:00:00Z')
+        from task_coach import clarification
+        with runtime.transaction() as state:
+            with runtime.coach._transaction() as engine:
+                clarification.prepare(runtime, state, engine, instant('2030-01-08T09:00:00Z'))
         state = runtime.status()
         for event in state['clarification_retry']['events']:
             event.pop('intent', None)
@@ -814,7 +819,7 @@ class RetryTest(ClarificationTest):
         Racing(data).preflight(now='2030-01-08T09:00:00Z')
         self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'pending')
 
-    def test_before_window_question_retires_at_first_allowed_window_not_tomorrow(self):
+    def test_before_window_legacy_question_survives_first_local_first_window(self):
         runtime, history, drafts, now = self.fixture()
         # Retained receipts can produce a normal-inbound hold before a later day's window.
         early = '2030-01-08T08:40:00Z'
@@ -823,8 +828,8 @@ class RetryTest(ClarificationTest):
         runtime.preflight(now=early)
         self.assertEqual(runtime.status()['clarifications'][record['id']]['state'], 'pending')
         runtime.preflight(now='2030-01-08T09:00:00Z')
-        self.assertEqual(runtime.status()['clarifications'][record['id']]['state'], 'retired')
-        self.assertEqual(runtime.status()['clarification_retry']['events'], [])
+        self.assertEqual(runtime.status()['clarifications'][record['id']], record)
+        self.assertNotIn('clarification_retry', runtime.status())
 
     def test_confirmed_retry_quarantines_owner_reply_in_its_fresh_readback(self):
         runtime, history, drafts, due, pending, draft = self.retry_draft()

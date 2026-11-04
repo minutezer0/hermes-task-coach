@@ -261,7 +261,7 @@ class Coach:
         if type(opportunity_minutes) is not int or not 1 <= opportunity_minutes <= 10:
             raise ValueError('opportunity must be 1..10 minutes')
         self.opportunity_minutes = opportunity_minutes
-        # The native driver selects policy after explicit durable runtime opt-in.
+        # The native driver selects its durable default/compatibility policy.
         # Standalone coach tick keeps its compatibility evidence contract.
         self.local_first = False
         self.directory = Path(data_dir)
