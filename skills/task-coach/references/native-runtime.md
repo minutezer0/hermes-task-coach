@@ -1,5 +1,106 @@
 # Native Hermes runtime: optional Discord adapter
 
+## Local-first proactive policy (0.1.0rc5)
+
+Fresh runtime stores use local-first policy by default. After a code update,
+known existing runtime stores automatically adopt it on first ordinary runtime
+use (including `runtime status`), after validating saved config, runtime, route
+and engine state. No policy opt-in or second approval is needed. The compatibility
+alias `runtime upgrade-local-first` remains idempotent; its old `--confirm-upgrade`
+flag is accepted but unnecessary. Help and `runtime native-plan` do not adopt policy.
+
+This changes only runtime policy, not task schema, saved tasks/settings/engine,
+installation, cron state or send authorization. Quiesce old writers before updating
+code; do not run older helpers afterward. Recurrence still requires explicit task
+`migrate` on legacy task databases. Delivery route/setup, artifact installation,
+live testing and ongoing activation remain separately explicit: default policy
+NEVER means automatic sending. Never send to a real route during update verification.
+
+Local task eligibility, recorded engagement, windows, spacing, budgets and global
+pause authorize **both openers and followups**. Native Hermes send remains the only
+transport. A positive `success:true` plus nonempty message ID persists `accepted`
+delivery with `native-send-response` provenance and advances ordinary work without
+history. This means transport acceptance, not independently verified arrival.
+Optional `confirm` validates real history and enriches the outbox as `confirmed`;
+its failure is a verification warning, not a failed send or a global scheduling lock.
+Failed/uncertain attempts remain nonretryable; their task sequence stops, while
+unrelated tasks and future days retain their own bounded opportunities. Report
+actual failed/uncertain sends with `[CRON_FAILURE]`, never silent success.
+
+The caller checks its native tool inventory/actual attempt and runs
+`runtime capabilities --history-availability unknown|unavailable|available`
+(with `--history-error TEXT` for failure). Core does not discover external tools:
+unknown means not checked, unavailable includes absent/error, and available means
+caller-reported availability, not delivery verification. Unknown/unavailable is
+visibly degraded and **nonblocking**. Do not wait for history or substitute a hosted
+connector when the native tool is absent. No source imports, raw credentials,
+alternate APIs or workarounds. Discord history remains an optional boundary
+adapter, never a scheduler dependency; no new platform is supported.
+
+For normal inbound, use exact trusted binding/owner/message ID and explicit task
+selection with `runtime record-engagement --binding JSON --owner OWNER
+--message-id INBOUND_ID --event-token EVENT --task-id TASK [--cycle-id CYCLE]
+--intent engaged|skip-for-now`. It needs no history: provenance is honest
+`agent-mediated-explicit-intent`, not an invented reply reference. Retry the exact
+identity/selection only. A recorded skip stops only that **current** sequence,
+without completion/snooze edits. Ambiguity requires a natural clarification before
+attribution or task edits, not a global check-in freeze. Existing immutable
+clarification audit/outcomes remain; resolving/resolved choices are never undone.
+New local-first ambiguity is handled conversationally, without creating automated
+clarification holds or retries.
+Unknown/unrecorded replies may receive bounded followups: this is an accepted
+tradeoff, not an impossible cross-session reply-suppression guarantee.
+
+Compatibility is explicit: existing episodes, IDs, outbox and clarification audits
+are retained, not reset/replayed. An existing episode keeps legacy policy for its
+whole local day; local-first begins on a later day. No current-day stopped episode
+or missed slot is revived. The boundary is the saved episode's local date, not the
+command clock; with no episode, adoption applies immediately without creating one.
+Already-local-first policy is untouched. Malformed or unknown data refuses before
+writing, preserving bytes, mtimes and sidecars rather than repairing it. Old
+attempts are never resent; existing receipt and clarification audits stay intact.
+Missed slots stop that task sequence; there is no catchup, backlog or budget
+expansion. Completion, cancellation, snooze, global pause, authorized route, current
+recurrence cycle and atomic write/send fences remain hard controls.
+
+## Local-first scheduled and inbound lifecycle
+
+1. Read `runtime status` and `runtime capabilities`; report the optional native
+   history capability from the caller inventory/attempt. A missing tool stays
+   absent for a separately authorized test; do not install, enable or substitute it.
+2. `runtime preflight`: quiet local guards mean stop. For due ordinary work,
+   compose one short question for the returned current task. Store plain text in
+   a private body file; run `runtime draft --event-token TOKEN --body-file FILE`.
+3. Optionally use supported native history and `runtime observe` when available.
+   Preserve real raw pages and trusted metadata; never fabricate captures. A failed
+   optional observation is a visible degradation, not a prerequisite to dispatch.
+4. `runtime dispatch --event-token TOKEN --fence FENCE --hermes ABSOLUTE_EXECUTABLE`
+   performs final local authorization and the only send. Read back `runtime status`.
+   `accepted` is a durable positive native response and permits subsequent ordinary
+   work; `sending`/`uncertain` is not success and must never be resent. Report actual
+   send failures/uncertainty as `[CRON_FAILURE]`. Independent readback warnings do
+   not mean that the accepted send failed.
+5. Optional `runtime confirm --event-token TOKEN --fence FENCE --pages-file FILE`
+   independently verifies bot/body/time/route and records confirmed provenance,
+   retaining the original acceptance. Do not wait for it before later valid work.
+   Never echo the check-in in commentary/final output: the helper owns delivery.
+6. In a normal inbound turn, use `runtime context --binding JSON` or exact trusted
+   `--reply-to-message-id TARGET` when present. Inspect status if context is null.
+   Ask naturally which task if selection is ambiguous. Once explicit meaning and
+   current sequence/cycle are clear, use `runtime record-engagement` as above with
+   the genuine trusted owner and inbound ID. A skip is engagement only. Do not
+   fabricate reply references or require history to record real trusted inbound.
+   Ask before task completion, snooze, cancellation or pause mutations.
+
+For install/update verification, check helper help/version, capability reporting,
+the exact generated wrapper/prompt/inbound instruction, initially paused cron and
+both local delivery targets by readback without invoking a user-store preflight.
+Review and re-generate approved native-plan artifacts after code replacement;
+policy adoption itself never rewrites installed wrappers, cron or inbound instructions.
+Keep recurring cron paused during any separately approved one-check-in
+test. Report acceptance and independent verification separately, plus the untested
+live follow-up-suppression limit. Obtain separate ongoing activation approval.
+
 ## Recurring task cycle fences
 
 Completion-based tasks reuse IDs, so IDs alone are not snapshot identities.
@@ -42,8 +143,9 @@ or current saved value before offering to keep it or customize.
 
 Each distinct selected task has its own opener and bounded follow-ups. A reply
 stops only the matching task's follow-ups; later task check-ins remain scheduled.
-Global pause, changed configuration/binding and uncertain delivery still suppress
-unattended sends. Sequences are planned without overlap and with an inter-task
+Global pause and changed configuration/binding still suppress unattended sends.
+Uncertain delivery suppresses only its local-first sequence, or globally under
+the retained legacy policy. Sequences are planned without overlap and with an inter-task
 gap of at least 30 minutes (or the saved minimum follow-up interval if larger).
 Fewer eligible tasks or insufficient window space produces fewer sequences.
 Context returns an explicitly targeted confirmed task, or the latest confirmed
@@ -103,7 +205,7 @@ hermes cron create 'every 1m' PROMPT --name task-coach --skill task-coach --scri
 
 The `--script` argument is relative to the active profile's `scripts` directory;
 the separate `script_path` artifact is absolute for writing and verification.
-No `--no-agent`: the agent must read history and compose human text. The cron
+No `--no-agent`: the agent composes human text; history is optional in local-first. The cron
 wrapper takes no arguments. Its last nonempty stdout line is always a JSON object
 with literal wakeAgent:false on subprocess failure, malformed/missing output or
 30-second timeout; otherwise it relays the validated preflight boolean. Native
@@ -143,10 +245,12 @@ one newly generated planned opener with durable episode
 opportunity capped at window end. The config is unchanged; there are **zero
 follow-ups**, regardless of saved follow-up limits. The result has
 `test_prepared:true`, `wakeAgent:false` and the persisted `episode`. Run normal
-preflight, draft, dispatch and confirm for this exact event; real history matching
-the exact bot/body/time/route is still required. No receipt/fence/history rule is
-relaxed, and uncertain attempts remain permanently nonretryable. Then use normal
-context/engagement with real owner reply history and continue the task in chat.
+preflight, draft and dispatch for this exact event. Under default local-first policy,
+confirm/history is optional independent verification, never required for accepted
+delivery. The legacy policy still requires exact bot/body/time/route readback.
+Uncertain attempts remain permanently nonretryable in either policy. Then use
+normal context and trusted record-engagement (or optional real history attribution)
+and continue the task in chat.
 
 The conservative supported scope is **no existing episode at all and an entirely
 empty outbox**. Coach status with `episode:null` is okay. Any active plan, stopped
@@ -189,7 +293,12 @@ If today's episode is stopped, explain that regular check-ins start on the next
 allowed day rather than promising a send soon today. Paused installations must
 say check-ins are paused, not that proactive setup is complete.
 
-## Complete CLI lifecycle
+## Complete CLI lifecycle (legacy policy only)
+
+The history-gated protocol in this section is retained only for the preserved
+legacy episode day during automatic adoption. It is **not** the rc5
+local-first path above. Its pending/uncertain global locks and mandatory history
+requirements must never be imposed on local-first scheduling.
 
 Prefix each command with the explicit installed helper and consistent data path:
 
@@ -315,6 +424,10 @@ schedule paused until separately approved. Never edit/delete a database, prune
 an outbox or bypass dispatch as an operator workaround for a refused restart.
 
 ## History capture format and coverage
+
+For local-first this entire capture/clarification enhancement is optional and
+nonblocking. The legacy protocol alone requires it before sends. Pending questions
+remain auditable but do not globally hold local-first ordinary check-ins.
 
 Use native `discord` action `fetch_messages` with exact channel_id, `limit:100`.
 Start at latest with neither before nor after; then use `before` equal to the

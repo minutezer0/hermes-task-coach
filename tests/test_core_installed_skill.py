@@ -42,6 +42,16 @@ class InstalledSkillTest(unittest.TestCase):
     def cli(self, *args, **kwargs):
         return json.loads(self.invoke(*args, **kwargs).stdout)
 
+    def test_copied_skill_local_first_capability_contract(self):
+        self.cli('setup', '--timezone', 'UTC')
+        route = dict(binding=dict(owner='fictional-owner', profile='fictional-profile', account='fictional-account', chat='123', thread='none'), platform='discord', destination='discord:123', channel_id='123', bot_id='456')
+        self.cli('runtime', 'configure', '--route', json.dumps(route), '--confirm-setup')
+        report = self.cli('runtime', 'capabilities', '--history-availability', 'unavailable')
+        self.assertTrue(report['local_first'])
+        self.assertTrue(report['degraded'])
+        self.assertFalse(report['history_required'])
+        self.assertIn('--event-token', self.invoke('runtime', 'record-engagement', '--help').stdout)
+
     def test_copied_skill_recurrence_completion_retry(self):
         self.cli('setup', '--timezone', 'America/Los_Angeles')
         task = self.cli('add', 'Fictional filter', '--repeat', '3 months', '--due', '2024-01-31')

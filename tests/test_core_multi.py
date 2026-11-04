@@ -140,11 +140,13 @@ class MultipleTasksTest(unittest.TestCase):
         episode = self.engine().preview(binding=BINDING, now='2030-01-07T08:00:00Z', seed=1)['episode']
         self.assertEqual(len([episode] + episode.get('next_tasks', [])), 1)
 
-    def test_uncertain_send_blocks_later_tasks_even_after_day_rollover(self):
+    def test_legacy_uncertain_send_is_retained_but_next_day_local_work_can_progress(self):
         from task_coach.driver import Driver
         from test_core_driver import BINDING as binding
         self.cli('add', 'Second fictional task')
         runtime = Driver(self.data)
+        from test_core_driver import persist_legacy_runtime
+        persist_legacy_runtime(runtime, binding=binding)
         runtime.configure(dict(binding=binding, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
         runtime.preflight(now='2030-01-07T08:00:00Z')
         episode = runtime.coach.status()['episode']
@@ -155,11 +157,12 @@ class MultipleTasksTest(unittest.TestCase):
         runtime.coach.stop(first['token'], binding)
         self.assertFalse(runtime.preflight(now=next_slot)['wakeAgent'])
         self.assertFalse(runtime.preflight(now='2030-01-08T08:00:00Z')['wakeAgent'])
-        # Even if another low-level planner creates tomorrow, outbox uncertainty
-        # must still prevent the runtime from authorizing its due task.
+        # The legacy day's uncertainty never retries; later local-first work is independent.
+        journal = runtime.status()['outbox']
         runtime.coach.prepare(binding=binding, now='2030-01-08T08:00:00Z')
         tomorrow = runtime.coach.status()['episode']['events'][0]
-        self.assertFalse(Driver(self.data).preflight(now=tomorrow['slot'])['wakeAgent'])
+        self.assertTrue(Driver(self.data).preflight(now=tomorrow['slot'])['wakeAgent'])
+        self.assertEqual(runtime.status()['outbox'], journal)
 
     def test_late_receipt_and_unverified_history_stop_entire_window(self):
         from task_coach.coaching import instant

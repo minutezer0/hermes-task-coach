@@ -4,7 +4,7 @@ import json
 import sys
 import unittest
 import test_core_coaching as fixtures
-from test_core_driver import BINDING
+from test_core_driver import BINDING, persist_legacy_runtime
 from task_coach.driver import Driver
 
 
@@ -18,6 +18,7 @@ class ClarificationTest(unittest.TestCase):
         self.cli('add', 'Second fictional task')
         runtime = Driver(self.data)
         runtime.coach.rng = __import__('random').Random(1)
+        persist_legacy_runtime(runtime)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
         runtime.preflight(now='2030-01-07T08:00:00Z')
         root = runtime.coach.status()['episode']
@@ -347,13 +348,9 @@ class ClarificationTest(unittest.TestCase):
         history.insert(0, self.message('104', later))
         result = runtime.engagement(BINDING, self.pages(history, later), now=later)
         self.assertEqual(result['error'], 'ambiguous-engagement')
-        pending = result['clarifications'][0]
-        history.insert(0, self.message('105', later, 'The first task'))
-        before = runtime.coach.status()
-        selected = runtime.resolve_clarification(binding=BINDING, clarification_id=pending['id'],
-            task_id=drafts[0]['task']['id'], selection_message_id='105', pages=self.pages(history, later), now=later)
-        self.assertEqual(selected['context']['task_id'], drafts[0]['task']['id'])
-        self.assertEqual(runtime.coach.status(), before, 'old attribution must not engage today\'s candidates')
+        self.assertEqual(result['clarifications'], [])
+        self.assertFalse(runtime.pending_clarifications(BINDING))
+        self.assertTrue(runtime.local_first())
 
     def test_resolved_hold_racing_final_boundary_still_forbids_catchup(self):
         runtime, history, drafts, now = self.fixture()

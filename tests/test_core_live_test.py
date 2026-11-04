@@ -76,8 +76,9 @@ class LiveTest(unittest.TestCase):
         fake.write_text('#!' + sys.executable + '\nprint(\'{"success":true,"message_id":"100"}\')\n')
         fake.chmod(0o700)
         row = runtime.dispatch(token, draft['fence'], hermes=str(fake), now=self.now)
-        self.assertEqual(row['state'], 'sending')
-        self.assertEqual(runtime.coach.status()['deliveries'], 0)
+        self.assertEqual(row['state'], 'accepted')
+        self.assertEqual(runtime.coach.status()['deliveries'], 1)
+        self.assertEqual(row['acceptance']['provenance'], 'native-send-response')
         with self.assertRaises(ValueError):
             runtime.confirm(token, draft['fence'], [], now=self.now)
         with self.assertRaises(ValueError):
@@ -143,12 +144,11 @@ class LiveTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.data.iterdir()), before)
         runtime = self.configured()
         route = runtime.status()['route']
-        with runtime.transaction() as state:
-            state['route'] = dict(route, destination='discord:999')
-        with self.assertRaisesRegex(ValueError, 'exact Discord'):
-            runtime.prepare_test(confirm=True, now=self.now)
-        with runtime.transaction() as state:
-            state['route'] = route
+        # Default policy validates stored routes at the write boundary too.
+        with self.assertRaisesRegex(ValueError, 'invalid runtime state'):
+            with runtime.transaction() as state:
+                state['route'] = dict(route, destination='discord:999')
+        self.assertEqual(runtime.status()['route'], route)
         self.cli('done', '1')
         with self.assertRaisesRegex(ValueError, 'eligible task'):
             runtime.prepare_test(confirm=True, now=self.now)

@@ -161,7 +161,7 @@ def validate_state(state):
                     if event['token'] in tokens:
                         raise ValueError('invalid coaching state')
                     tokens.add(event['token'])
-                    consumed += event['index'] > 0 and event['state'] != 'planned'
+                    consumed += event['index'] > 0 and event['state'] != 'planned' and event.get('authorization') != 'local-first'
                     if event['receipt']:
                         key = event['receipt']['message_id']
                         if key in messages:
@@ -192,15 +192,17 @@ def validate_state(state):
             raise ValueError('invalid coaching state')
         # Every claimed followup consumed a distinct snapshot. Older episodes may
         # leave additional IDs, but cannot account for fewer than this episode.
-        if sum(e.get('index', 0) > 0 and e.get('state') != 'planned' for e in events if isinstance(e, dict)) > len(state['evidence_ids']):
+        if sum(e.get('index', 0) > 0 and e.get('state') != 'planned' and e.get('authorization') != 'local-first' for e in events if isinstance(e, dict)) > len(state['evidence_ids']):
             raise ValueError('invalid coaching state')
         tokens, messages = set(), set()
         previous = None
         unfinished = False
         for index, event in enumerate(events):
             required = {'token', 'index', 'slot', 'expires', 'state', 'receipt'}
-            if not (isinstance(event, dict) and required <= set(event) <= required | {'claimed_at'}):
+            if not (isinstance(event, dict) and required <= set(event) <= required | {'claimed_at', 'authorization'}):
                 raise ValueError('invalid coaching state')
+            if 'authorization' in event and (event['authorization'] != 'local-first' or event['state'] == 'planned'):
+                raise ValueError('invalid coaching authorization')
             if not (type(event['index']) is int and event['index'] == index):
                 raise ValueError('invalid coaching state')
             if not (isinstance(event['token'], str) and event['token'].strip() and event['token'] not in tokens):
@@ -259,6 +261,9 @@ class Coach:
         if type(opportunity_minutes) is not int or not 1 <= opportunity_minutes <= 10:
             raise ValueError('opportunity must be 1..10 minutes')
         self.opportunity_minutes = opportunity_minutes
+        # The native driver selects its durable default/compatibility policy.
+        # Standalone coach tick keeps its compatibility evidence contract.
+        self.local_first = False
         self.directory = Path(data_dir)
         self.rng = rng if rng is not None else random.SystemRandom()
 
@@ -473,7 +478,7 @@ class Coach:
             if validate_config(episode['config']) != config or episode['binding'] != binding:
                 window_stop(episode, 'configuration-changed')
             for sequence in sequences(episode):
-                if sequence['stopped'] not in (None, 'owner-engaged', 'task-unavailable', 'missed-slot'):
+                if not getattr(self, 'local_first', False) and sequence['stopped'] not in (None, 'owner-engaged', 'task-unavailable', 'missed-slot'):
                     window_stop(episode, sequence['stopped'])
             if episode.get('window_stopped'):
                 return dict(wakeAgent=False, reason=episode['window_stopped'])
@@ -482,6 +487,10 @@ class Coach:
             for sequence in sequences(episode):
                 for event in sequence['events']:
                     if event['state'] == 'claimed':
+                        if getattr(self, 'local_first', False):
+                            if now >= instant(event['expires']):
+                                sequence['stopped'] = sequence['stopped'] or 'unconfirmed-delivery'
+                            continue
                         if now >= instant(event['expires']):
                             window_stop(episode, 'unconfirmed-delivery')
                         return dict(wakeAgent=False, reason=episode.get('window_stopped') or episode['stopped'] or 'pending-delivery')
@@ -491,7 +500,7 @@ class Coach:
                     result = dict(wakeAgent=False, reason=sequence['stopped'])
                     continue
                 result = self._tick_sequence(sequence, state, now, binding, config, evidence, expected_token, prepare_only)
-                if result['wakeAgent'] or result['reason'] not in ('complete', 'missed-slot', 'task-unavailable', 'owner-engaged'):
+                if result['wakeAgent'] or (not getattr(self, 'local_first', False) and result['reason'] not in ('complete', 'missed-slot', 'task-unavailable', 'owner-engaged')):
                     return result
             return result
 
@@ -530,12 +539,15 @@ class Coach:
                     return dict(wakeAgent=False, reason='minimum-delivery-spacing')
                 if elapsed > config['max_followup_interval'] * 60:
                     episode['stopped'] = 'maximum-delivery-spacing'
-                    window_stop(state['episode'], 'maximum-delivery-spacing')
+                    if not getattr(self, 'local_first', False):
+                        window_stop(state['episode'], 'maximum-delivery-spacing')
                     return dict(wakeAgent=False, reason=episode['stopped'])
-                if not self.check_evidence(evidence, previous, binding, now, state):
+                if not getattr(self, 'local_first', False) and not self.check_evidence(evidence, previous, binding, now, state):
                     episode['stopped'] = 'unverified-engagement'
                     window_stop(state['episode'], 'unverified-engagement')
                     return dict(wakeAgent=False, reason=episode['stopped'])
+            if getattr(self, 'local_first', False):
+                event['authorization'] = 'local-first'
             event['state'] = 'claimed'
             event['claimed_at'] = now.isoformat()
             return dict(wakeAgent=True, intent=dict(event_token=event['token'], index=event['index'], task_id=episode['task_id'], binding=binding, expires=event['expires'], kind='opener' if not event['index'] else 'followup'))
@@ -595,9 +607,10 @@ class Coach:
             message_key = hashlib.sha256(json.dumps([receipt['binding'], receipt['message_id']], sort_keys=True).encode('utf-8')).hexdigest()
             if message_key in state['message_ids']:
                 raise ValueError('replayed message identifier')
-            if reconcile and now >= instant(event['expires']):
+            if reconcile and now >= instant(event['expires']) and not (getattr(self, 'local_first', False) and delivered < instant(event['expires'])):
                 episode['stopped'] = episode['stopped'] or 'late-reconciled'
-                window_stop(state['episode'], 'late-reconciled')
+                if not getattr(self, 'local_first', False):
+                    window_stop(state['episode'], 'late-reconciled')
             event['state'] = 'delivered'
             event['receipt'] = receipt
             state['message_ids'].append(message_key)

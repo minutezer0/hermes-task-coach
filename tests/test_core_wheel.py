@@ -56,6 +56,14 @@ class WheelArtifactTest(unittest.TestCase):
             self.assertEqual(json.loads(run(command + flags, env=env).stdout), task)
             self.assertEqual(json.loads(run(command + ["show", str(task["id"])], env=env).stdout), task)
             skill = venv / "share" / "task-coach" / "skill"
+            route = dict(binding=dict(owner='fictional-owner', profile='fictional-profile', account='fictional-account', chat='123', thread='none'), platform='discord', destination='discord:123', channel_id='123', bot_id='456')
+            run(command + ['runtime', 'configure', '--route', json.dumps(route), '--confirm-setup'], env=env)
+            capability = json.loads(run(command + ['runtime', 'capabilities', '--history-availability', 'unavailable'], env=env).stdout)
+            self.assertTrue(capability['local_first'])
+            self.assertTrue(capability['degraded'])
+            self.assertFalse(capability['history_required'])
+            self.assertIn('0.1.0-rc.5', (skill / 'SKILL.md').read_text())
+            run(command + ['runtime', 'record-engagement', '--help'], env=env)
             # Neither the build tree nor the installed Python package is available to the system interpreter.
             shutil.rmtree(project)
             copied = root / "relocated wheel skill"

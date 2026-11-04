@@ -6,7 +6,7 @@ import sys
 import unittest
 
 import test_core_coaching as fixtures
-from test_core_driver import BINDING
+from test_core_driver import BINDING, persist_legacy_runtime
 
 
 class ReplyRoutingTest(unittest.TestCase):
@@ -20,6 +20,7 @@ class ReplyRoutingTest(unittest.TestCase):
         self.cli('add', 'Second fictional task')
         runtime = Driver(self.data)
         runtime.coach.rng = random.Random(1)
+        persist_legacy_runtime(runtime, now=start)
         runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123',
                                channel_id='123', bot_id='456'), confirm=True)
         runtime.preflight(now=start)
