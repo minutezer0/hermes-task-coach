@@ -58,11 +58,16 @@ class WheelArtifactTest(unittest.TestCase):
             skill = venv / "share" / "task-coach" / "skill"
             route = dict(binding=dict(owner='fictional-owner', profile='fictional-profile', account='fictional-account', chat='123', thread='none'), platform='discord', destination='discord:123', channel_id='123', bot_id='456')
             run(command + ['runtime', 'configure', '--route', json.dumps(route), '--confirm-setup'], env=env)
+            self.assertEqual(json.loads(run(command + ['runtime', 'smart-snooze'], env=env).stdout), {'enabled': False})
+            self.assertEqual(json.loads(run(command + ['runtime', 'smart-snooze', '--enable'], env=env).stdout), {'enabled': True})
+            self.assertTrue(json.loads(run(command + ['runtime', 'status'], env=env).stdout)['smart_snooze_enabled'])
+            self.assertEqual(json.loads(run(command + ['runtime', 'smart-snooze', '--disable'], env=env).stdout), {'enabled': False})
+            self.assertEqual(json.loads(run(command + ['show', str(task['id'])], env=env).stdout), task)
             capability = json.loads(run(command + ['runtime', 'capabilities', '--history-availability', 'unavailable'], env=env).stdout)
             self.assertTrue(capability['local_first'])
             self.assertTrue(capability['degraded'])
             self.assertFalse(capability['history_required'])
-            self.assertIn('0.1.0-rc.6', (skill / 'SKILL.md').read_text())
+            self.assertIn('0.1.0-rc.7', (skill / 'SKILL.md').read_text())
             run(command + ['runtime', 'record-engagement', '--help'], env=env)
             # Neither the build tree nor the installed Python package is available to the system interpreter.
             shutil.rmtree(project)

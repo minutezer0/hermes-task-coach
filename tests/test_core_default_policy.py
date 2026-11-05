@@ -64,7 +64,7 @@ class DefaultPolicyTest(__import__('unittest').TestCase):
             return Driver(self.data).status()
         with ThreadPoolExecutor(max_workers=6) as pool:
             states = list(pool.map(read, range(6)))
-        self.assertTrue(all(s == dict(route=None, outbox={}, local_first=dict(after_day=None)) for s in states))
+        self.assertTrue(all(s == dict(route=None, outbox={}, local_first=dict(after_day=None), smart_snooze_enabled=False) for s in states))
         self.assertFalse((self.data / 'coach.sqlite3').exists())
 
     def test_invalid_compatibility_inputs_preserve_all_files(self):

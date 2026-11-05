@@ -5,6 +5,82 @@ choose a small next step, and work through blockers in an ordinary conversation.
 No messaging account is needed. Optional automatic check-ins currently support
 **already-configured Discord connections only**.
 
+## Smart Snooze (0.1.0rc7)
+
+Smart Snooze is a **hold-only notification preference**, default OFF on fresh and
+all known older runtimes missing the field. With it ON, a genuine explicit
+“start working now” reply to a current accepted/delivered check-in or follow-up
+records `start-work` and holds **all** Task Coach automated notifications for the
+remaining current configured local notification window, including other tasks and
+legacy clarification retries. It does not change task status, completion, snooze,
+priority/selection weights, global pause, reminders or cron activation.
+Generic `engaged`, `skip-for-now`, completion and ordinary replies never create a
+hold; historical engagement is never reinterpreted as start-work.
+
+Use the actual installed helper and approved active-profile data scope:
+
+```sh
+python3 "<skill_dir>/scripts/task-coach.py" runtime smart-snooze
+python3 "<skill_dir>/scripts/task-coach.py" runtime smart-snooze --enable
+python3 "<skill_dir>/scripts/task-coach.py" runtime smart-snooze --disable
+python3 "<skill_dir>/scripts/task-coach.py" runtime smart-snooze
+```
+
+During conversational **check-in** setup, separately ask: “Smart Snooze is off by
+default. If you explicitly start working after a check-in, should I hold all Task
+Coach check-ins until your current notification window ends?” Reuse and present
+the actual saved `runtime smart-snooze` value on resumed setup, rather than
+re-interviewing. Persist only the explicit choice and read back. Never ask this
+question for local-only task setup. This choice alone never activates cron.
+
+Record clear engagement **BEFORE substantive assistance, memory recall or
+delegation**, using `runtime record-engagement --binding JSON --owner OWNER
+--message-id INBOUND_ID --event-token EVENT --task-id TASK [--cycle-id CYCLE]
+--intent start-work` only for genuine explicit agreement to begin working now.
+Use `engaged` for general engagement and `skip-for-now` for a skip. Bind the genuine
+trusted owner/profile/account/chat/thread, inbound message identity and current
+task/event/cycle; clarify ambiguous intent or task selection, never fabricate IDs,
+reply references or history. Read back before claiming suppression. Normal inbound
+needs no Discord history. Completion and task edits need separate explicit intent.
+
+There is one current runtime hold slot, not a hold-history table. Its route,
+triggering task/event/message, local day, timezone/config snapshot and absolute
+expiry are retained for requested diagnostics. `runtime status` exposes
+`notification_policy.active`, reason and hold when a slot exists; `runtime preflight`
+returns `wakeAgent:false`, reason `smart-snooze` while active. Do not expose audit
+IDs or diagnostic blocks in everyday coaching unless requested or needed to explain
+a problem. The existing engagement audit can explain past actions.
+
+Completion, snooze, cancellation or deletion of the focused task does not release
+the hold. Disable immediately clears it. Re-enable applies only to future,
+unconsumed start-work replies: retrying an old message never recreates, extends or
+renews a hold, including messages originally recorded while OFF. No suppressed or
+expired events are replayed and stopped sequences never revive; already planned,
+future unexpired events may still become eligible after disabling. Expiry is the
+current allowed local window end, not a task deadline or a scheduler reset. The
+next allowed day is eligible even if cleanup never ran and the task remains open;
+ordinary preflight clears/reuses an expired slot. Weekdays and DST follow the
+existing real-instant window policy; overnight windows remain unsupported.
+
+The shared directory lock fences planning/claims and the final refreshed-clock
+transport check against newly recorded holds. A send already in flight cannot be
+recalled. Failed/uncertain attempts remain nonretryable; no claim of stronger
+platform delivery, typing/read-receipt or cross-session intent detection is made.
+Malformed/unknown runtime state refuses without silently repairing it. The task
+SQLite schema and settings are unchanged; the optional runtime fields remain in
+schema version 1, separate from episode configuration so toggling never causes a
+configuration-changed stop. No network SDK or new history access is introduced.
+
+After an approved code/instruction update, regenerate/review native-plan artifacts
+and scoped inbound instructions; previews are side-effect-free and cron stays
+initially paused. Continuing conversations may cache old system instructions.
+The supported targeted command is
+`hermes sessions refresh-prompts --session ID --json`: it preserves conversation
+history and queues refresh for the **next turn**, not the already-running turn.
+Report queued versus verified adoption separately; do not clear sessions or restart
+a shared gateway just to refresh prompts. Updating this guide is not installation,
+refresh, live testing or activation approval.
+
 ## Discord history consent and bounded on-demand use (rc6)
 
 History is OFF by default for fresh stores and all older stores without a saved

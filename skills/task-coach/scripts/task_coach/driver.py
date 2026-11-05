@@ -49,7 +49,9 @@ class Driver:
     @staticmethod
     def validate_state(state):
         try:
-            if not {'route', 'outbox'} <= set(state) <= {'route', 'outbox', 'clarifications', 'clarification_retry', 'clarification_responses', 'local_first', 'engagements', 'history_consent'} or not isinstance(state['outbox'], dict):
+            if not {'route', 'outbox'} <= set(state) <= {'route', 'outbox', 'clarifications', 'clarification_retry', 'clarification_responses', 'local_first', 'engagements', 'history_consent', 'smart_snooze_enabled', 'smart_snooze_hold'} or not isinstance(state['outbox'], dict):
+                raise ValueError
+            if type(state.get('smart_snooze_enabled', False)) is not bool:
                 raise ValueError
             if 'history_consent' in state:
                 consent = state['history_consent']
@@ -176,13 +178,31 @@ class Driver:
                         or not isinstance(message_id, str) or not message_id.strip() or request['message_id'] != message_id
                         or request['binding'] != state['route']['binding'] or request['owner'] != request['binding']['owner']
                         or request['task_id'] != row['task']['id'] or request['cycle_id'] != row['task'].get('cycle_id')
-                        or row['state'] not in ('accepted', 'confirmed') or request['intent'] not in ('engaged', 'skip-for-now')
+                        or row['state'] not in ('accepted', 'confirmed') or request['intent'] not in ('engaged', 'skip-for-now', 'start-work')
                         or result != dict(engaged=True, task_id=request['task_id'], event_token=request['event_token'], provenance='captured-owner-history' if 'message' in entry else 'agent-mediated-explicit-intent')
                         or ('message' in entry and (entry['message']['id'] != message_id
                             or entry['message']['author'] != dict(id=request['owner'], bot=False)))
                         or (json.dumps(request['binding'], sort_keys=True), message_id) in identities):
                     raise ValueError
                 instant(entry['recorded_at'])
+            if 'smart_snooze_hold' in state:
+                hold = state['smart_snooze_hold']
+                if (not isinstance(hold, dict) or set(hold) != {'route', 'day', 'config', 'event_token',
+                        'task_id', 'message_id', 'started_at', 'expires'}
+                        or not state.get('smart_snooze_enabled', False) or hold['route'] != state['route']):
+                    raise ValueError
+                from .coaching import window_minutes
+                from .cli import validate_config
+                config = validate_config(hold['config'])
+                minutes = window_minutes(hold['day'], config)
+                entry = engagements[hold['message_id']]
+                request = entry['request']
+                if (not minutes or instant(hold['expires']) != minutes[-1] + timedelta(minutes=1)
+                        or not minutes[0] <= instant(hold['started_at']) < instant(hold['expires'])
+                        or hold['started_at'] != entry['recorded_at'] or request['intent'] != 'start-work'
+                        or request['event_token'] != hold['event_token'] or request['task_id'] != hold['task_id']
+                        or instant(hold['started_at']) < instant(state['outbox'][hold['event_token']]['receipt']['delivered_at'])):
+                    raise ValueError
             for token, row in state['outbox'].items():
                 required = {'token', 'fence', 'state', 'body', 'route', 'task', 'intent', 'previous', 'evidence'}
                 if not required <= set(row) <= required | {'attempted_at', 'candidate_id', 'uncertain', 'receipt', 'acceptance'}:
@@ -317,7 +337,7 @@ class Driver:
                     if fresh:
                         db.execute(SCHEMA)
                         db.execute('PRAGMA user_version=1')
-                        state = dict(route=None, outbox={}, local_first=dict(after_day=None))
+                        state = dict(route=None, outbox={}, local_first=dict(after_day=None), smart_snooze_enabled=False)
                     else:
                         schema = db.execute("SELECT sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").fetchall()
                         if db.execute('PRAGMA user_version').fetchone()[0] != 1 or schema != [(SCHEMA,)]:
@@ -506,9 +526,46 @@ class Driver:
         if not preference['enabled']:
             raise ValueError('Discord history authorization required (default OFF)')
 
-    def status(self):
+    @staticmethod
+    def _active_hold(state, now):
+        hold = state.get('smart_snooze_hold')
+        return hold if (state.get('smart_snooze_enabled', False) and hold
+                        and now < instant(hold['expires'])) else None
+
+    def smart_snooze(self, *, enabled=None, now=None):
+        if enabled is not None and type(enabled) is not bool:
+            raise ValueError('Smart Snooze preference must be boolean')
         with self.transaction() as state:
-            return json.loads(json.dumps(state))
+            if enabled is not None:
+                if not enabled and state.get('smart_snooze_hold'):
+                    hold = state['smart_snooze_hold']
+                    cutoff = instant(now or datetime.now(UTC))
+                    # Disabling cannot replay an opportunity suppressed while held.
+                    # Engine first is conservative on a crash: the still-ON hold
+                    # remains authoritative until the atomic runtime clear commits.
+                    with self.coach._transaction() as engine:
+                        for sequence in sequences(engine['episode']):
+                            if (sequence['day'] == hold['day'] and sequence['binding'] == hold['route']['binding']
+                                    and any(e['state'] == 'planned' and instant(e['slot']) <= cutoff
+                                            for e in sequence['events'])):
+                                sequence['stopped'] = sequence['stopped'] or 'missed-slot'
+                    retry = state.get('clarification_retry')
+                    if retry:
+                        for event in retry['events']:
+                            if event['state'] == 'planned' and instant(event['slot']) <= cutoff:
+                                event['state'] = 'missed'
+                    state.pop('smart_snooze_hold', None)
+                state['smart_snooze_enabled'] = enabled
+            return dict(enabled=state.get('smart_snooze_enabled', False))
+
+    def status(self, *, now=None):
+        with self.transaction() as state:
+            result = json.loads(json.dumps(state))
+            if state.get('smart_snooze_hold'):
+                active = bool(self._active_hold(state, instant(now or datetime.now(UTC))))
+                result['notification_policy'] = dict(active=active, reason='smart-snooze' if active else 'expired',
+                    hold=result['smart_snooze_hold'])
+            return result
 
     def restart(self, *, confirm=False, now=None):
         if confirm is not True:
@@ -612,7 +669,29 @@ class Driver:
                                  purposes=['reply-recovery', 'delivery-verification']),
                     degraded=state != 'available', history_required=not local_first)
 
-    def record_engagement(self, *, binding, owner, message_id, event_token, task_id,
+    def record_engagement(self, **kwargs):
+        # Runtime audit and hold commit together BEFORE any start-work engine
+        # mutation. A crash in the second phase is recovered from that audit.
+        with self._directory_lock():
+            result = self._record_engagement(**kwargs)
+            if kwargs.get('intent') == 'start-work':
+                with self.transaction(readonly=True) as runtime:
+                    self._reconcile_start_work(runtime)
+            return result
+
+    def _reconcile_start_work(self, runtime):
+        starts = [entry['request'] for entry in runtime.get('engagements', {}).values()
+                  if entry['request']['intent'] == 'start-work']
+        if not starts:
+            return
+        with self.coach._transaction() as engine:
+            for request in starts:
+                sequence = event_episode(engine['episode'], request['event_token'])
+                if (sequence and sequence['binding'] == request['binding']
+                        and sequence.get('cycle_id') == request['cycle_id']):
+                    sequence['stopped'] = sequence['stopped'] or 'owner-engaged'
+
+    def _record_engagement(self, *, binding, owner, message_id, event_token, task_id,
                           cycle_id, intent, now=None):
         """Agent-mediated explicit intent from trusted native inbound metadata.
 
@@ -621,7 +700,7 @@ class Driver:
         validate_binding(binding)
         if owner != binding['owner'] or not isinstance(message_id, str) or not message_id.strip():
             raise ValueError('exact trusted owner and inbound message ID required')
-        if intent not in ('engaged', 'skip-for-now'):
+        if intent not in ('engaged', 'skip-for-now', 'start-work'):
             raise ValueError('explicit engagement intent required')
         now = instant(now or datetime.now(UTC))
         request = dict(binding=binding, owner=owner, message_id=message_id,
@@ -653,8 +732,24 @@ class Driver:
                 result = dict(engaged=True, task_id=task_id, event_token=event_token,
                               provenance='agent-mediated-explicit-intent')
                 records[message_id] = dict(request=request, result=result, recorded_at=now.isoformat())
+                if intent == 'start-work':
+                    from .coaching import window_minutes
+                    from zoneinfo import ZoneInfo
+                    config = self.coach.config()
+                    day = now.astimezone(ZoneInfo(config['timezone'])).date().isoformat()
+                    minutes = window_minutes(day, config)
+                    if (sequence['day'] != day or sequence['config'] != config or not minutes
+                            or not minutes[0] <= now < minutes[-1] + timedelta(minutes=1)
+                            or now < instant(row['receipt']['delivered_at'])
+                            or engine['last_tick'] and now < instant(engine['last_tick'])):
+                        raise ValueError('start-work requires the current accepted notification window')
+                    if runtime.get('smart_snooze_enabled', False) and not self._active_hold(runtime, now):
+                        runtime['smart_snooze_hold'] = dict(route=runtime['route'], day=day, config=config,
+                            event_token=event_token, task_id=task_id, message_id=message_id,
+                            started_at=now.isoformat(), expires=(minutes[-1] + timedelta(minutes=1)).isoformat())
                 self.validate_state(runtime)
-                sequence['stopped'] = sequence['stopped'] or 'owner-engaged'
+                if intent != 'start-work':
+                    sequence['stopped'] = sequence['stopped'] or 'owner-engaged'
             return result
 
     def upgrade_local_first(self, *, confirm=False, now=None):
@@ -677,7 +772,19 @@ class Driver:
             return policy['after_day'] is None or day is not None and day > policy['after_day']
 
     def preflight(self, *, now=None):
-        runtime = self.status()
+        with self._directory_lock():
+            return self._preflight(now=now)
+
+    def _preflight(self, *, now=None):
+        self.coach.config()  # Validate current settings before recoverable engine writes.
+        with self.transaction() as locked:
+            current = instant(now or datetime.now(UTC))
+            self._reconcile_start_work(locked)
+            if self._active_hold(locked, current):
+                return dict(wakeAgent=False, reason='smart-snooze', hold=locked['smart_snooze_hold'])
+            if locked.get('smart_snooze_hold') and current >= instant(locked['smart_snooze_hold']['expires']):
+                locked.pop('smart_snooze_hold')
+            runtime = json.loads(json.dumps(locked))
         self.coach.local_first = self.local_first(now=now or datetime.now(UTC))
         if self.coach.local_first:
             episode = self.coach.status()['episode']
@@ -745,6 +852,9 @@ class Driver:
         now = instant(now or datetime.now(UTC))
         from zoneinfo import ZoneInfo
         from .coaching import DAYS, eligible
+        with self.transaction(readonly=True) as runtime:
+            if self._active_hold(runtime, now):
+                raise ValueError('smart-snooze')
         if not self.local_first() and (row['previous'] or clarification.retry_row(row)):
             self._require_history()
         if clarification.retry_row(row):
@@ -793,9 +903,13 @@ class Driver:
         if not prepared['wakeAgent'] or prepared['intent'] != row['intent'] or not same_snapshot(row['task'], prepared['task']) or self.status()['route'] != row['route']:
             raise ValueError('draft authorization changed')
         if not clarification.retry_row(row):
-            claimed = self.coach.tick(now=now, binding=row['route']['binding'], evidence=row['evidence'], expected_token=token)
-            if not claimed['wakeAgent']:
-                raise ValueError('claim suppressed: ' + claimed['reason'])
+            with self._directory_lock():
+                with self.transaction(readonly=True) as runtime:
+                    if self._active_hold(runtime, now):
+                        raise ValueError('smart-snooze before claim')
+                    claimed = self.coach.tick(now=now, binding=row['route']['binding'], evidence=row['evidence'], expected_token=token)
+                    if not claimed['wakeAgent']:
+                        raise ValueError('claim suppressed: ' + claimed['reason'])
         with self.transaction() as state:
             current = state['outbox'][token]
             if current['state'] != 'draft' or current['fence'] != fence:
@@ -823,8 +937,9 @@ class Driver:
                     raise ValueError('pending clarification; delivery held')
                 with self.coach._transaction() as engine:
                     if clarification.retry_row(row):
+                        boundary = now if now_supplied else instant(datetime.now(UTC))
                         clarification.authorize(self, state, engine, state['outbox'][token],
-                                                now if now_supplied else instant(datetime.now(UTC)))
+                                                boundary)
                     else:
                         sequence = event_episode(engine['episode'], token)
                         event = next((e for e in sequence['events'] if e['token'] == token), None) if sequence else None
@@ -850,6 +965,8 @@ class Driver:
                                 raise ValueError('actual delivery spacing exceeded at send boundary')
                         if not local_first and self.missed_during_clarification(state, row['route']['binding'], event):
                             raise ValueError('clarification-missed-opportunity')
+                if self._active_hold(state, boundary):
+                    raise ValueError('smart-snooze at send boundary')
                 result = subprocess.run([hermes, 'send', '--json', '--to', row['route']['destination'], '--', row['body']],
                                         capture_output=True, text=True, timeout=45, check=False)
                 payload = json.loads(result.stdout)
@@ -1292,6 +1409,7 @@ class Driver:
             + '. Re-run runtime preflight and runtime capabilities. Never fetch Discord history in routine cron, even with saved opt-in. '
             'Do not call history-plan or any external history tool in scheduled turns. No hosted connector, source imports, raw credentials or alternate APIs. '
             'For local-first work local eligibility, recorded engagement, windows, spacing, budgets and pause authorize openers AND followups without history. '
+            'A smart-snooze guard suppresses ALL Task Coach notifications until the saved window expiry; stop without drafting or sending. Never reset or replay held opportunities. '
             'Compose only for the returned current task; runtime draft then runtime dispatch --hermes ' + str(hermes_path) + '. '
             'Native Hermes send is the only transport. Accepted is transport acceptance, not independently verified arrival. '
             'Optional history failure or an absent anchor is a verification warning, never a local-first scheduling lock. '
@@ -1299,8 +1417,8 @@ class Driver:
             'Never revive missed slots or resend attempted/uncertain events. Actual failed/uncertain sends require [CRON_FAILURE]; quiet guards and optional verification warnings are separate. '
             'No final chat delivery: delivery is handled by the helper.')
         instruction = ('For normal inbound ONLY matching the confirmed owner/profile/account/chat/thread binding, load task-coach and inspect runtime status/context. '
-            'Prefer trusted runtime record-engagement --binding JSON --owner OWNER --message-id INBOUND_ID --event-token EVENT --task-id TASK '
-            '[--cycle-id CYCLE] --intent engaged or skip-for-now, using explicit owner intent and current cycle. No history is required for local-first engagement. '
+            'Record explicit owner intent and clear task engagement BEFORE substantive assistance, memory recall or delegation. Use trusted runtime record-engagement --binding JSON --owner OWNER --message-id INBOUND_ID --event-token EVENT --task-id TASK '
+            '[--cycle-id CYCLE] --intent start-work for genuine explicit agreement to begin working now; use engaged for generic engagement or skip-for-now for a skip. Never reinterpret old engaged audit as start-work. Use the genuine inbound message ID and current task/event/cycle; clarify ambiguity, never invent IDs or history. Read back before claiming suppression. No history is required for local-first engagement. '
             'Ask naturally which task when ambiguous; do not invent reply references, complete/snooze tasks or globally freeze local-first work. '
             'Inspect runtime history-preference and runtime capabilities --history-availability unknown|unavailable|available; tool availability is not consent or delivery verification. '
             'With history OFF make no external history reads. With exact-route consent ON, only an explicitly requested reply-recovery or delivery-verification may use '
@@ -1311,6 +1429,7 @@ class Driver:
             'The plan records caller-asserted explicit user intent; it cannot cryptographically prove the user asked. Helper gates do not sandbox arbitrary external tools. '
             'Never fetch routinely, substitute an MCP/hosted connector, or infer consent from tool availability. '
             'Retain exact identities for retries; preserve legacy gates and immutable clarification outcomes, resolving/resolved choices and uncertain attempts. '
+            'Smart Snooze defaults OFF; runtime smart-snooze reads or explicitly changes it with --enable/--disable. A new start-work reply while ON holds all Task Coach notifications for the remaining current local window, without task changes. Disable clears the hold; old message retries never recreate it. A send already in flight cannot be recalled. '
             'Pause uses coach pause and readback; completion, snooze and other task edits need separate explicit intent.')
         history_policy = dict(default='off', routine_reads_allowed=False,
             purposes=['reply-recovery', 'delivery-verification'], limit=25, max_pages=1,
@@ -1448,6 +1567,10 @@ def _validate_pages(pages, route, anchor, now, *, recovery_start=None):
 def add_parser(commands):
     runtime = commands.add_parser('runtime', help='Native Hermes integration; explicit setup required')
     operations = runtime.add_subparsers(dest='runtime_command', required=True)
+    snooze = operations.add_parser('smart-snooze', help='Read or change Smart Snooze (default OFF); never activates cron')
+    toggle = snooze.add_mutually_exclusive_group()
+    toggle.add_argument('--enable', action='store_true')
+    toggle.add_argument('--disable', action='store_true')
     preference = operations.add_parser('history-preference', help='Read or explicitly change exact-route Discord history permission (default OFF)')
     choice = preference.add_mutually_exclusive_group()
     choice.add_argument('--enable', action='store_true')
@@ -1466,7 +1589,7 @@ def add_parser(commands):
         inbound.add_argument('--' + field, required=True)
     inbound.add_argument('--task-id', type=int, required=True)
     inbound.add_argument('--cycle-id')
-    inbound.add_argument('--intent', choices=('engaged', 'skip-for-now'), required=True)
+    inbound.add_argument('--intent', choices=('engaged', 'skip-for-now', 'start-work'), required=True)
     upgrade = operations.add_parser('upgrade-local-first', help='Idempotent alias for automatic first-use runtime policy adoption')
     upgrade.add_argument('--confirm-upgrade', action='store_true', help='Accepted for compatibility; no longer required')
     capability = operations.add_parser('capabilities', help='Report caller optional history inventory/attempt; no external discovery')
@@ -1522,6 +1645,8 @@ def add_parser(commands):
 def run_cli(directory, args):
     driver = Driver(directory)
     operation = args.runtime_command
+    if operation == 'smart-snooze':
+        return driver.smart_snooze(enabled=True if args.enable else False if args.disable else None)
     if operation == 'history-plan':
         return driver.history_plan(purpose=args.purpose, target=args.target, confirm=args.confirm_history)
     if operation == 'history-preference':
