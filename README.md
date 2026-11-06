@@ -260,18 +260,33 @@ Installing the skill does not itself launch a chat. Say:
 
 > Help me set up Task Coach. Ask one question at a time and reuse my saved settings.
 
-Hermes first asks whether you want **local conversational tasks** or **optional
-Discord check-ins**. Local setup does not ask about notification schedules, install
+Hermes first asks: **“Enable Proactive Mode (currently only supported in Discord)?”**
+It explains how check-ins help and that you can manage tasks with Proactive Mode off.
+For fresh setup inside a conversation identified as Discord by trusted Hermes
+context, Yes is the suggested default; Hermes still asks for your answer. Saved
+choices take precedence. Local setup does not ask about notification schedules, install
 jobs, or send messages. Tell Hermes a task in your own words, then work on it
 together. Tasks are never marked complete just because you replied.
 
+For Proactive Mode, Hermes guides you through preferences, a real task, schedule
+installation, an optional test, and a separate approval to turn on regular check-ins.
+When adding your first ordinary task, Hermes offers an optional due date; you can
+leave it without one. Recurring tasks require an initial due date.
+Saving preferences is an intermediate step; Hermes continues to the next unfinished
+checkpoint. The optional test defaults to **No** and sends only after an explicit
+Yes. You can skip the test and activate after reviewing the unverified
+delivery limits. If a step is blocked, Hermes explains what is needed to continue.
+
 For Discord, Hermes confirms your existing destination and asks only for missing
-check-in preferences, using everyday language. Only after choosing Discord
+check-in preferences, using everyday language. It offers Monday–Friday, 9am–5pm
+in your confirmed timezone or suggests a timezone from trusted user context for
+confirmation. If none is available, it asks; the server timezone is not assumed
+to be yours. Only after choosing Discord
 check-ins and confirming the destination, Hermes separately asks whether to allow
 bounded history for explicitly requested reply recovery or delivery verification
 (**default No**), explaining unrelated messages and extra model input tokens.
 Local-only setup never asks that Discord question. Resumed setup reuses the actual
-saved choice; the user can disable it later. The default is up to **3 distinct
+saved choice; the user can disable it later. The default is up to **2 distinct
 tasks per configured window**. Hermes shows that default (or your saved maximum)
 and asks whether to keep it or customize it, separately from follow-up settings.
 It presents one understandable
@@ -298,6 +313,11 @@ Setup ends with a short conversational explanation of what's ready and what to
 expect next—not a dashboard. If only local tasks are ready, no automatic message
 is promised. A test alone leaves the ongoing schedule paused. Everyday coaching
 stays focused on the task, without task IDs or test bookkeeping unless requested.
+
+The final step reviews your chosen settings, first task and any unverified test
+limits. Hermes explains that Yes turns on regular check-ins, then asks:
+**“Are you ready to start using your Task Coach?”** You can correct settings before
+agreeing; No leaves the schedule paused.
 
 After separately authorized ongoing activation, Hermes verifies the active
 schedule, an eligible task and a supported upcoming allowed opportunity before
@@ -444,11 +464,11 @@ repeat setup preserves tasks and configuration. Use `setup --update` for deliber
 changes. `setup --update --interactive` displays saved values; blank keeps them.
 Legacy `--destination` stores a preference only and does not configure delivery.
 
-Default preferences are UTC, Monday–Friday, 09:00–17:00, up to 3 distinct tasks,
+Default preferences are UTC, Monday–Friday, 09:00–17:00, up to 2 distinct tasks,
 up to two unanswered follow-ups per task, and 30–120 minute follow-up intervals.
 Set `--max-tasks-per-window` to an integer from 1 through 10. Saved configurations
 from before this setting retain a maximum of 1 until you explicitly change it
-with `setup --update --max-tasks-per-window 3`. Local-only setup leaves unused notification defaults
+with `setup --update --max-tasks-per-window 2`. Local-only setup leaves unused notification defaults
 alone. Preferences do not trigger messages. Overnight windows are unsupported.
 
 ## Storage and task fields

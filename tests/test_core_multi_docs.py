@@ -13,11 +13,11 @@ class MultiTaskDocumentationTest(unittest.TestCase):
         self.assertIsNone(re.search(r'^\d+\|', text, re.MULTILINE))
         self.assertIn('--max-tasks-per-window', text)
 
-    def test_chat_setup_shows_three_before_keep_or_customize(self):
+    def test_chat_setup_shows_two_before_keep_or_customize(self):
         text = (ROOT / 'skills/task-coach/SKILL.md').read_text()
-        self.assertIn('The default is up to 3 distinct tasks', text)
-        self.assertIn('Keep the default of 3, or customize?', text)
-        self.assertIn('--max-tasks-per-window 3', text)
+        self.assertIn('The default is up to 2 distinct tasks', text)
+        self.assertIn('Keep the default of 2, or customize?', text)
+        self.assertIn('--max-tasks-per-window 2', text)
         self.assertIn('later task check-ins remain scheduled', text)
         self.assertNotIn('then ask. if', text)
 
