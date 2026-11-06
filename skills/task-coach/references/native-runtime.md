@@ -266,7 +266,7 @@ unsupported platforms are rejected, never silently allowed to follow up.
 
 ## Multiple tasks in one daily window
 
-`max_tasks_per_window` defaults to 3 for new stores and accepts integers 1..10.
+`max_tasks_per_window` defaults to 2 for new stores and accepts integers 1..10.
 Existing configurations without the key retain 1 until an explicit setup update.
 Ask the maximum-tasks question only for proactive check-ins, showing the default
 or current saved value before offering to keep it or customize.
@@ -286,6 +286,19 @@ engagement to a later task. An explicit one-check-in test stays one opener with
 no follow-ups or additional tasks, regardless of the maximum.
 
 ## Confirmed onboarding, paused native job
+
+Follow the skill's “Carry proactive setup through to activation” checkpoints.
+The user-facing choice is “Enable Proactive Mode (currently only supported in
+Discord)?” Saving preferences does not finish proactive setup: continue through
+installation, the optional test offer, and the separate ongoing activation
+question. The optional test question defaults to No and requires an explicit Yes
+before sending a test. A skipped or currently unavailable test is not a prerequisite for
+activation; disclose unverified delivery and follow-up suppression. Keep a failed
+or uncertain attempted send paused pending resolution. Reuse saved state and
+matching installed artifacts when resuming. Onboarding asks for only one task,
+reusing an existing open task or the one already supplied. The daily maximum is
+not a task-entry quota. A future-due recurring or snoozed task does not require
+adding another task; skip an unavailable test and explain when eligibility begins.
 
 After the user chooses Discord check-ins and confirms the destination, ask the
 separate default-No history question in the skill's Guided onboarding section.
@@ -423,9 +436,22 @@ operator obligations, not an invented helper-enforced schedule fence.
 Do not add a five-minute test follow-up or require a follow-up pilot during setup.
 The optional one-check-in delivery test is the onboarding test; disclose that
 cancellation of a pending live follow-up remains unverified, then obtain distinct
-ongoing-send approval. After that approval, read back the active schedule and
-verify an eligible task and a supported upcoming allowed opportunity before
-finishing naturally: “Task Coach setup complete—you’ll be hearing from me soon!”
+ongoing-send approval. For that final approval, review the saved destination,
+window/timezone, task maximum, follow-up policy, Smart Snooze and history choices,
+first task and test outcome/remaining limits. Explain that Yes turns on regular
+check-ins, then ask: “Are you ready to start using your Task Coach?” Allow settings
+corrections before activation; do not add another approval after this question.
+If settings change, keep cron paused and revisit the affected route/preferences
+and installation checkpoints. Regenerate/reconcile affected wrapper, cron and
+scoped reply instructions with approval for any changed installation scope, then
+read back before reviewing the revised settings for activation. A destination
+change also requires confirming the new route and checking its exact-route
+history consent; old-route consent does not transfer.
+After approval, read back the active schedule and the task's eligibility. If the
+single task is not yet eligible, confirm setup is complete with check-ins waiting
+for eligibility during an allowed window; do not require an additional task or
+promise an exact send. Only with an eligible task and a supported upcoming
+allowed opportunity, finish naturally: “Task Coach setup complete—you’ll be hearing from me soon!”
 If today's episode is stopped, explain that regular check-ins start on the next
 allowed day rather than promising a send soon today. Paused installations must
 say check-ins are paused, not that proactive setup is complete.

@@ -1,7 +1,7 @@
 ---
 name: task-coach
 description: "Use when managing tasks or coaching follow-through. Guide local task setup and optional native Hermes check-ins."
-version: 0.1.0-rc.7
+version: 0.1.0-rc.8
 license: MIT
 platforms: [linux]
 metadata:
@@ -281,19 +281,49 @@ when the user selected another directory. Never discover another profile's tasks
 
 ## Guided onboarding
 
-Start with the mode, not notification details. Ask one short question at a time,
+Open naturally: “Welcome to Task Coach! I’ll help you organize tasks, choose a
+manageable next step, and work through blockers. Let’s get you set up, one question
+at a time.” Start with the mode, not notification details. Ask one short question at a time,
 reusing answers already supplied and saved settings from `setup` readback when a
 store exists (check only the approved active data scope):
 
-1. “Would you like to manage tasks here in conversation, or also have Discord
-   check-ins?” Local tasks work without any messaging account or cron.
+1. Introduce the choice: “Enable Proactive Mode (currently only supported in
+   Discord)?” Explain: “This is where Task Coach shines: instead of waiting for
+   you to remember to ask for help, I’ll check in about your tasks, help you get
+   started, and work through what’s getting in the way, all during the window you
+   choose. You’ll need an existing Discord connection in Hermes. With Proactive
+   Mode off, you can still manage tasks and get coaching whenever you message me.”
+   For a fresh setup, if trusted current Hermes gateway/session context explicitly
+   identifies this conversation as Discord, present Yes as the default: “Enable
+   Proactive Mode? Default: Yes.” Follow with: “This is where Task Coach shines:
+   instead of waiting for you to remember to ask for help, I’ll check in here about
+   your tasks, help you get started, and work through what’s getting in the way,
+   all during the window you choose.” Include the same explanation of using Task
+   Coach with Proactive Mode off, then ask whether to enable it. Otherwise use the
+   general question above without assuming a platform. A configured Discord route,
+   tool availability or message text alone does not identify the current platform.
+   Reuse an existing explicit mode choice instead of replacing it with this default.
+   This is a conversational default: ask for an answer, accept an explicit “use
+   the default,” and never treat silence as consent or automatically activate sends.
+   A Yes starts guided proactive setup; explain that you’ll confirm preferences,
+   set up the schedule, and ask before regular check-ins start. It does not
+   itself authorize installation, a test message, or ongoing sends.
+   A No continues local conversational setup.
 2. For local-only use, ask location/timezone only if needed for dates; accept a
    familiar city/region and resolve its timezone with confirmation, rather than
    asking users to know an IANA identifier. Run `setup` with confirmed flags or
    defaults. Do not ask weekdays, notification windows, follow-up limits or routes.
 3. Only for check-ins, explain that an already-configured Discord connection is
    required; do not imply other platforms or account provisioning are supported.
-   Confirm the exact route from trusted context. Only after the user chooses Discord
+   Confirm the exact route from trusted context. When the current conversation is
+   identified as Discord by trusted context, ask: “Send your check-ins here in this
+   conversation? Default: Yes.” Explain: “This is where you’ll receive
+   task check-ins and follow-ups. You can also choose a dedicated channel
+   to keep your Task Coach conversations together.” Wait for an answer; the default
+   is not consent. If the user says No, ask which existing Discord destination to use,
+   resolve their plain-language name through supported route discovery, and confirm
+   the exact match; clarify ambiguous or unavailable names rather than guessing.
+   Only after the user chooses Discord
    check-ins and confirms that destination, ask separately:
 
    “May I read a small amount of Discord history here only when you explicitly
@@ -310,12 +340,20 @@ store exists (check only the approved active data scope):
    Explain that the user can disable later, and review/refresh installed scoped
    instructions and tool allowlists when this preference changes.
 
-   Ask only for missing timezone
-   and allowed days/times in plain language: “When is it okay for me to check in?”
+   Reuse a previously confirmed timezone. Otherwise, if trusted user profile or
+   session context provides the user's timezone, suggest it for confirmation;
+   never infer it from the host/server timezone or Discord alone. If unavailable,
+   ask for a city/region or timezone. UTC in a fresh default config is not a
+   confirmed user timezone.
+   Present saved days/hours when resuming; for a fresh setup suggest the defaults
+   with the confirmed or suggested user timezone: “Use the default check-in hours:
+   Monday–Friday, 9am–5pm [timezone]?” Explain the source of a suggested timezone
+   and that days, hours or timezone can be changed. If the user changes only the
+   hours, retain the confirmed days and timezone. Ask only for missing information.
    Once the window is known, ask a separate maximum-tasks question first:
 
    “How many different tasks would you like me to check in about during that
-   window? The default is up to 3 distinct tasks. Keep the default of 3, or customize?”
+   window? The default is up to 2 distinct tasks. Keep the default of 2, or customize?”
 
    For an existing store, show its actual saved maximum and ask whether to keep
    that value or customize; legacy configurations without this setting retain 1.
@@ -343,12 +381,82 @@ store exists (check only the approved active data scope):
    saved answers; don't re-interview. Showing defaults is not approval to save or
    enable them.
 
+### Carry proactive setup through to activation
+
+Treat Proactive Mode as one guided flow with these checkpoints. Saving task
+preferences is an intermediate step. Continue to the next unfinished checkpoint
+in the same conversation; do not finish with “scheduling is not set up” and leave
+it to the user to discover how to proceed. Ask one question at a time and reuse
+saved choices and approvals for their exact scope.
+
+1. Confirm the destination and missing preferences using the questions above.
+2. Save and read back preferences and the confirmed runtime route. Ask for just
+   one real task if the user has none to use; reuse an existing open task or the
+   task already supplied during this setup. The daily task maximum is a ceiling,
+   not an onboarding task count: never ask the user to fill all 2 (or more) slots.
+   If that one task is not eligible yet, retain it and explain when it can become
+   eligible; do not ask for another task just to finish setup or run a test.
+   For an ordinary
+   task without a supplied due date, ask: “Would you like to add a due date? It’s
+   optional—you can leave this task without one.” Accept “no date” without further
+   date questions or inventing a deadline. If a date was already supplied, reuse it;
+   resolve relative dates in the confirmed timezone and clarify ambiguity. Recurring
+   tasks follow the required initial-due-date protocol below instead. Then add and
+   verify the task and any chosen due date before any preflight. Never create a
+   sample task.
+3. Inspect existing installation artifacts and present the installation approval
+   described below. After approval, install or reuse the wrapper, paused schedule
+   and scoped reply instruction, then verify all three by readback. In this
+   installation prompt, put the explanation first and the approval question at
+   the very bottom: explain the schedule and reply handling will be installed
+   paused, with nothing sending until final activation approval, then ask
+   “Set up your check-in schedule? Default: Yes.” Wait for the user's answer.
+4. Offer the optional one-check-in test only when the runtime supports it now:
+   “Send one test check-in now? Default: No. You can skip this and turn on regular
+   check-ins next.” Explain that it sends one message and leaves regular check-ins
+   paused. Send a test only after an explicit Yes; a blank/default selection means
+   No, and no response is not authorization. If the user skips it or the allowed window is closed, disclose that live delivery and
+   follow-up suppression remain unverified and continue to the activation question.
+   A failed or uncertain attempted send needs explanation and resolution before
+   activation; keep the schedule paused. Never bypass a test refusal.
+5. Make the final step a brief review using actual saved/read-back settings:
+   destination, days/window/timezone, maximum distinct tasks, unanswered follow-up
+   limit and randomized spacing, what a reply stops (never task completion),
+   Smart Snooze choice, optional history choice/scope, and the first task with its
+   due date or “no due date.”
+   State whether the test was skipped or what it established, including remaining
+   verification limits. Do not re-ask each preference; invite corrections.
+   Then explain: “Saying Yes turns on regular check-ins with these settings.”
+   Ask: “Are you ready to start using your Task Coach?” This is the separate
+   ongoing activation approval, not an additional question before another approval.
+   If the user requests changes, keep the schedule paused and return through
+   the affected preference, route and installation checkpoints. Save and read back
+   the changes; regenerate the native plan and reconcile the wrapper, exact cron
+   job and scoped reply instruction wherever affected, obtaining approval for any
+   changed installation scope. A destination change requires confirming the new
+   route, checking history consent for that exact route, and updating the scoped
+   reply instruction before activation. Reuse matching artifacts without duplicate
+   jobs or instructions; preserve unrelated instructions. Verify all affected
+   artifacts by readback, then review the revised settings and ask for activation
+   approval again. A No leaves the schedule paused.
+   After approval, activate through supported native cron controls and read back
+   the exact job and the task's eligibility/next supported allowed opportunity.
+   If the task is not yet eligible, explain that the schedule is active and
+   check-ins wait until an eligible task and allowed window coincide. Do not
+   require a test or a follow-up pilot as a prerequisite for this question.
+
+If the user declines installation or activation, honor that choice and explain
+what is ready and what remains paused. If a required tool, connection or permission
+is missing, name the specific blocker and the next action needed to resume from
+that checkpoint. A missing optional history tool is not a scheduling blocker.
+Choosing Proactive Mode off completes local setup without these checkpoints.
+
 Confirm the relevant settings, then run non-interactive setup with explicit flags.
 Do not wait for agent-terminal stdin. These generic notification flags are only
 for users who actually chose check-ins (use confirmed values):
 
 ```sh
-python3 "<skill_dir>/scripts/task-coach.py" setup --timezone UTC --weekdays mon,tue,wed,thu,fri --notification-start 09:00 --notification-end 17:00 --max-tasks-per-window 3 --max-unanswered-followups 2 --min-followup-interval 30 --max-followup-interval 120
+python3 "<skill_dir>/scripts/task-coach.py" setup --timezone UTC --weekdays mon,tue,wed,thu,fri --notification-start 09:00 --notification-end 17:00 --max-tasks-per-window 2 --max-unanswered-followups 2 --min-followup-interval 30 --max-followup-interval 120
 python3 "<skill_dir>/scripts/task-coach.py" setup
 python3 "<skill_dir>/scripts/task-coach.py" list
 ```
@@ -429,11 +537,15 @@ for the user to request a status report. Examples, only when the state supports 
 
 - Local ready: “You’re ready to work on tasks here. What would you like to tackle?”
 - Installed paused: “Your check-ins are set up but paused. Would you like to try
-  one check-in during your allowed hours?”
+  one check-in during your allowed hours? Default: No—you can skip the test and
+  turn on regular check-ins next.”
 - Test verified, recurring still paused: “That check-in arrived and your reply
   brought us back to the task. Regular check-ins are still paused.” Mention the
   untested live follow-up suppression briefly at this setup checkpoint.
-- Ongoing active: finish proactive onboarding naturally: “Task Coach setup complete—you’ll be hearing from me soon!” **only** after separately authorized ongoing activation, readback of the active schedule, and verification of an eligible task and a supported upcoming allowed opportunity. If today's episode is stopped, explain that regular check-ins start on the next allowed day rather than promising a send soon today. Say “I’ll check in here tomorrow” only when the verified schedule, window, task and plan support it. Paused installations must say check-ins are paused, not that proactive setup is complete.
+- Ongoing active, task awaiting eligibility: “Task Coach setup complete. Regular
+  check-ins are on; they’ll begin when your task is eligible during your chosen
+  hours.” Explain the actual eligibility condition without promising an exact send.
+- Ongoing active, eligible task: “Task Coach setup complete—you’ll be hearing from me soon!” **only** after separately authorized ongoing activation, readback of the active schedule, and verification of an eligible task and a supported upcoming allowed opportunity. If today's episode is stopped, explain that regular check-ins start on the next allowed day rather than promising a send soon today. Say “I’ll check in here tomorrow” only when the verified schedule, window, task and plan support it. Paused installations must say check-ins are paused, not that proactive setup is complete.
 
 Do not add a five-minute test follow-up to the setup flow. The optional one-check-in delivery test is sufficient as the onboarding test step; disclose that cancellation of a pending live follow-up remains unverified, then obtain separate ongoing-send approval. Do not require a follow-up pilot to finish onboarding or silently enable recurring work.
 

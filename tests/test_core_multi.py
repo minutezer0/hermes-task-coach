@@ -13,8 +13,17 @@ class MultipleTasksTest(unittest.TestCase):
     receipt = fixtures.EngineTest.receipt
     evidence = fixtures.EngineTest.evidence
 
-    def test_new_install_default_is_three(self):
-        self.assertEqual(self.cli('setup')['config'].get('max_tasks_per_window'), 3)
+    def test_new_install_default_is_two(self):
+        self.assertEqual(self.cli('setup')['config'].get('max_tasks_per_window'), 2)
+
+    def test_saved_task_maximum_survives_setup_and_unrelated_update(self):
+        self.cli('setup', '--update', '--max-tasks-per-window', '3')
+        path = self.data / 'config.json'
+        before = path.read_bytes(), path.stat().st_mtime_ns
+        self.assertEqual(self.cli('setup')['config']['max_tasks_per_window'], 3)
+        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
+        updated = self.cli('setup', '--update', '--timezone', 'Europe/Paris')['config']
+        self.assertEqual(updated['max_tasks_per_window'], 3)
 
     def test_legacy_config_stays_single_until_explicit_update(self):
         path = self.data / 'config.json'
@@ -37,7 +46,7 @@ class MultipleTasksTest(unittest.TestCase):
         command = [sys.executable, '-I', '-B', str(fixtures.SCRIPTS / 'task-coach.py'), '--data-dir', str(self.data), 'setup', '--update', '--interactive', *flags]
         kept = subprocess.run(command, input='discord\nkeep\n', capture_output=True, text=True)
         self.assertEqual(kept.returncode, 0, kept.stderr)
-        self.assertIn('Current maximum distinct tasks per window: 3', kept.stderr)
+        self.assertIn('Current maximum distinct tasks per window: 2', kept.stderr)
         self.assertIn('Keep or customize?', kept.stderr)
         changed = subprocess.run(command, input='discord\ncustomize\n5\n', capture_output=True, text=True)
         self.assertEqual(changed.returncode, 0, changed.stderr)
@@ -56,6 +65,7 @@ class MultipleTasksTest(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
 
     def test_three_distinct_sequences_survive_restart_and_owner_reply(self):
+        self.cli('setup', '--update', '--max-tasks-per-window', '3')
         from task_coach.coaching import instant
         self.cli('add', 'Second fictional task')
         self.cli('add', 'Third fictional task')
