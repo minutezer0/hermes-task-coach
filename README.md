@@ -253,12 +253,51 @@ for full retry, snapshot and stale clarification behavior.
 
 ## Install
 
+For the experimental **ChatGPT desktop** integration with separate local data,
+see [the desktop prototype](#chatgpt-desktop-prototype). The Hermes skill and its
+install command below are unchanged.
+
 Requires Python 3.11+ with SQLite and timezone data. Linux is the qualified platform;
 there are no third-party runtime dependencies.
 
 ```sh
 hermes skills install minutezer0/hermes-task-coach/skills/task-coach
 ```
+
+## ChatGPT desktop prototype
+
+The separate [desktop skill](plugins/task-coach-desktop/skills/task-coach-desktop/SKILL.md)
+reuses the unchanged Python task core with its own data directory, conversation
+binding, output journal and Smart Snooze preference. It targets Python 3.11+ on
+macOS or a Linux host; native Windows and cloud hosting are not included.
+
+Build a self-contained local plugin ZIP from the repository:
+
+```sh
+python3 scripts/build-chatgpt-plugin.py --output /tmp/task-coach-desktop.zip
+```
+
+The builder packages the desktop manifest, skill, adapter and exact shared-core
+bytes. It includes a checksum inventory, never task databases or user settings.
+Use the desktop app's local plugin installation controls for that ZIP (where
+available), start a local conversation, and ask to set up Task Coach Desktop.
+This is a local testing artifact, not a published directory release. If your app
+doesn't expose local plugin installation, extract the ZIP and use the skill's
+absolute launcher path in a local-executor conversation to test the commands.
+
+Local task management works without native scheduling. Proactive setup generates
+a read-only plan; the agent must use actual supported native scheduling controls
+to install, verify and activate a same-conversation schedule. This helper never
+creates native jobs or edits private app scheduling files. Scheduled local runs
+need the computer awake and app running, and can consume usage even when quiet.
+
+Output preparation is not proof of delivery. Follow-ups require genuine native
+assistant output metadata, and engagement requires trusted inbound identity.
+If the native host doesn't expose those, report the limitation rather than
+inventing receipts or promising Hermes-equivalent behavior. See the
+[desktop protocol and macOS acceptance checks](plugins/task-coach-desktop/skills/task-coach-desktop/references/desktop-runtime.md).
+No live schedule or user store is created by repository tests. The Hermes skill
+directory, Python distribution metadata and install command stay unchanged.
 
 ## Start here
 
