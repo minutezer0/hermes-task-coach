@@ -1,7 +1,7 @@
 ---
 name: task-coach
 description: "Use when managing tasks or coaching follow-through. Guide local task setup and optional native Hermes check-ins."
-version: 0.1.0-rc.7
+version: 0.1.0-rc.8
 license: MIT
 platforms: [linux]
 metadata:

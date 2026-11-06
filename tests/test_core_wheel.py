@@ -67,7 +67,7 @@ class WheelArtifactTest(unittest.TestCase):
             self.assertTrue(capability['local_first'])
             self.assertTrue(capability['degraded'])
             self.assertFalse(capability['history_required'])
-            self.assertIn('0.1.0-rc.7', (skill / 'SKILL.md').read_text())
+            self.assertIn('0.1.0-rc.8', (skill / 'SKILL.md').read_text())
             run(command + ['runtime', 'record-engagement', '--help'], env=env)
             # Neither the build tree nor the installed Python package is available to the system interpreter.
             shutil.rmtree(project)

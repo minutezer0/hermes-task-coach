@@ -5,6 +5,13 @@ choose a small next step, and work through blockers in an ordinary conversation.
 No messaging account is needed. Optional automatic check-ins currently support
 **already-configured Discord connections only**.
 
+## Guided setup (0.1.0rc8)
+
+The setup wizard now guides Proactive Mode through preferences, one task, schedule
+installation, an optional test (default No), and a final settings review before
+activation. New stores default to up to 2 distinct tasks per window; existing
+saved limits are preserved.
+
 ## Smart Snooze (0.1.0rc7)
 
 Smart Snooze is a **hold-only notification preference**, default OFF on fresh and
