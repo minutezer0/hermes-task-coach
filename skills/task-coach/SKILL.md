@@ -390,8 +390,13 @@ it to the user to discover how to proceed. Ask one question at a time and reuse
 saved choices and approvals for their exact scope.
 
 1. Confirm the destination and missing preferences using the questions above.
-2. Save and read back preferences and the confirmed runtime route. If there is
-   no eligible task, ask for one real task the user wants help with. For an ordinary
+2. Save and read back preferences and the confirmed runtime route. Ask for just
+   one real task if the user has none to use; reuse an existing open task or the
+   task already supplied during this setup. The daily task maximum is a ceiling,
+   not an onboarding task count: never ask the user to fill all 2 (or more) slots.
+   If that one task is not eligible yet, retain it and explain when it can become
+   eligible; do not ask for another task just to finish setup or run a test.
+   For an ordinary
    task without a supplied due date, ask: “Would you like to add a due date? It’s
    optional—you can leave this task without one.” Accept “no date” without further
    date questions or inventing a deadline. If a date was already supplied, reuse it;
@@ -424,10 +429,20 @@ saved choices and approvals for their exact scope.
    Then explain: “Saying Yes turns on regular check-ins with these settings.”
    Ask: “Are you ready to start using your Task Coach?” This is the separate
    ongoing activation approval, not an additional question before another approval.
-   If the user requests changes, save and read them back, then review the revised
-   settings before asking again. A No leaves the schedule paused.
+   If the user requests changes, keep the schedule paused and return through
+   the affected preference, route and installation checkpoints. Save and read back
+   the changes; regenerate the native plan and reconcile the wrapper, exact cron
+   job and scoped reply instruction wherever affected, obtaining approval for any
+   changed installation scope. A destination change requires confirming the new
+   route, checking history consent for that exact route, and updating the scoped
+   reply instruction before activation. Reuse matching artifacts without duplicate
+   jobs or instructions; preserve unrelated instructions. Verify all affected
+   artifacts by readback, then review the revised settings and ask for activation
+   approval again. A No leaves the schedule paused.
    After approval, activate through supported native cron controls and read back
-   the exact job, eligible task and next supported allowed opportunity. Do not
+   the exact job and the task's eligibility/next supported allowed opportunity.
+   If the task is not yet eligible, explain that the schedule is active and
+   check-ins wait until an eligible task and allowed window coincide. Do not
    require a test or a follow-up pilot as a prerequisite for this question.
 
 If the user declines installation or activation, honor that choice and explain
@@ -527,7 +542,10 @@ for the user to request a status report. Examples, only when the state supports 
 - Test verified, recurring still paused: “That check-in arrived and your reply
   brought us back to the task. Regular check-ins are still paused.” Mention the
   untested live follow-up suppression briefly at this setup checkpoint.
-- Ongoing active: finish proactive onboarding naturally: “Task Coach setup complete—you’ll be hearing from me soon!” **only** after separately authorized ongoing activation, readback of the active schedule, and verification of an eligible task and a supported upcoming allowed opportunity. If today's episode is stopped, explain that regular check-ins start on the next allowed day rather than promising a send soon today. Say “I’ll check in here tomorrow” only when the verified schedule, window, task and plan support it. Paused installations must say check-ins are paused, not that proactive setup is complete.
+- Ongoing active, task awaiting eligibility: “Task Coach setup complete. Regular
+  check-ins are on; they’ll begin when your task is eligible during your chosen
+  hours.” Explain the actual eligibility condition without promising an exact send.
+- Ongoing active, eligible task: “Task Coach setup complete—you’ll be hearing from me soon!” **only** after separately authorized ongoing activation, readback of the active schedule, and verification of an eligible task and a supported upcoming allowed opportunity. If today's episode is stopped, explain that regular check-ins start on the next allowed day rather than promising a send soon today. Say “I’ll check in here tomorrow” only when the verified schedule, window, task and plan support it. Paused installations must say check-ins are paused, not that proactive setup is complete.
 
 Do not add a five-minute test follow-up to the setup flow. The optional one-check-in delivery test is sufficient as the onboarding test step; disclose that cancellation of a pending live follow-up remains unverified, then obtain separate ongoing-send approval. Do not require a follow-up pilot to finish onboarding or silently enable recurring work.
 

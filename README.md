@@ -270,6 +270,9 @@ together. Tasks are never marked complete just because you replied.
 
 For Proactive Mode, Hermes guides you through preferences, a real task, schedule
 installation, an optional test, and a separate approval to turn on regular check-ins.
+Setup asks for only one task, regardless of the daily maximum, and reuses a task
+you already supplied. If it is not eligible yet, Hermes explains that check-ins
+will wait rather than asking you to add extra tasks.
 When adding your first ordinary task, Hermes offers an optional due date; you can
 leave it without one. Recurring tasks require an initial due date.
 Saving preferences is an intermediate step; Hermes continues to the next unfinished
@@ -317,7 +320,8 @@ stays focused on the task, without task IDs or test bookkeeping unless requested
 The final step reviews your chosen settings, first task and any unverified test
 limits. Hermes explains that Yes turns on regular check-ins, then asks:
 **“Are you ready to start using your Task Coach?”** You can correct settings before
-agreeing; No leaves the schedule paused.
+agreeing; Hermes updates and verifies any affected schedule and reply-handling
+instructions before asking for activation again. No leaves the schedule paused.
 
 After separately authorized ongoing activation, Hermes verifies the active
 schedule, an eligible task and a supported upcoming allowed opportunity before
