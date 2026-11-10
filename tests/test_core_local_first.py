@@ -110,7 +110,6 @@ class LocalFirstTest(unittest.TestCase):
         result = runtime.engagement(BINDING, helper.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         self.assertEqual(result['error'], 'ambiguous-engagement')
         before = runtime.status()
-        runtime.upgrade_local_first(confirm=True, now=now)
         runtime.preflight(now='2030-01-08T08:00:00Z')
         after = runtime.status()
         self.assertEqual(after['outbox'], before['outbox'])
@@ -129,7 +128,6 @@ class LocalFirstTest(unittest.TestCase):
         runtime.engagement(BINDING, helper.pages(history, now), now=now, history_plan=history_request(runtime, 'engagement'))
         with runtime.transaction() as state:
             clarification.activity(state, [helper.message('201', now)])
-        runtime.upgrade_local_first(confirm=True, now=now)
         runtime.preflight(now='2030-01-08T08:00:00Z')
         first = runtime.coach.status()['episode']['events'][0]
         event, next_now = first['token'], first['slot']
@@ -461,7 +459,6 @@ class LocalFirstTest(unittest.TestCase):
         report = self.cli('runtime', 'capabilities', '--history-availability', 'unavailable', '--history-error', 'fictional missing tool')
         self.assertEqual(report['history']['state'], 'unavailable')
         self.assertTrue(report['degraded'])
-        self.assertEqual(self.cli('runtime', 'upgrade-local-first', '--confirm-upgrade'), {'after_day': None})
 
     def test_acceptance_metadata_is_validated(self):
         import copy
@@ -499,7 +496,6 @@ class LocalFirstTest(unittest.TestCase):
         runtime.dispatch(event['token'], draft['fence'], hermes='/nonexistent-fictional-sender', now=event['slot'])
         outbox = runtime.status()['outbox']
         old = runtime.coach.status()['episode']
-        runtime.upgrade_local_first(confirm=True, now=event['slot'])
         self.assertEqual(runtime.coach.status()['episode'], old)
         self.assertFalse(runtime.local_first())
         self.assertTrue(runtime.capabilities()['history_required'])

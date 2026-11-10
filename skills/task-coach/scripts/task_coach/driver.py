@@ -755,14 +755,6 @@ class Driver:
                     sequence['stopped'] = sequence['stopped'] or 'owner-engaged'
             return result
 
-    def upgrade_local_first(self, *, confirm=False, now=None):
-        """Backward-compatible alias; ordinary runtime use adopts automatically.
-
-        The old confirmation flag remains accepted but is no longer required.
-        """
-        with self.transaction() as runtime:
-            return runtime['local_first']
-
     def local_first(self, *, now=None):
         with self.transaction(readonly=True) as runtime:
             policy = runtime.get('local_first')
@@ -1417,7 +1409,6 @@ class Driver:
             'Compose only for the returned current task; runtime draft then runtime dispatch --hermes ' + str(hermes_path) + '. '
             'Native Hermes send is the only transport. Accepted is transport acceptance, not independently verified arrival. '
             'Optional history failure or an absent anchor is a verification warning, never a local-first scheduling lock. '
-            'A preserved legacy episode retains its honest history gates until rollover: if due work requires history, stop and explain the limit; never fetch automatically or bypass it. '
             'Never revive missed slots or resend attempted/uncertain events. Actual failed/uncertain sends require [CRON_FAILURE]; quiet guards and optional verification warnings are separate. '
             'No final chat delivery: delivery is handled by the helper.')
         instruction = ('For normal inbound ONLY matching the confirmed owner/profile/account/chat/thread binding, load task-coach and inspect runtime status/context. '
@@ -1435,7 +1426,7 @@ class Driver:
             'An absent anchor or optional failure is a warning, not a block on accepted/local-first work. '
             'The plan records caller-asserted explicit user intent; it cannot cryptographically prove the user asked. Helper gates do not sandbox arbitrary external tools. '
             'Never fetch routinely, substitute an MCP/hosted connector, or infer consent from tool availability. '
-            'Retain exact identities for retries; preserve legacy gates and immutable clarification outcomes, resolving/resolved choices and uncertain attempts. '
+            'Retain exact identities for retries; preserve immutable clarification outcomes, resolving/resolved choices and uncertain attempts. '
             'Smart Snooze defaults OFF; runtime smart-snooze reads or explicitly changes it with --enable/--disable. A new start-work reply while ON holds all Task Coach notifications for the remaining current local window, without task changes. Disable clears the hold; old message retries never recreate it. A send already in flight cannot be recalled. '
             'Pause uses coach pause and readback; completion, snooze and other task edits need separate explicit intent.')
         history_policy = dict(default='off', routine_reads_allowed=False,
@@ -1597,8 +1588,6 @@ def add_parser(commands):
     inbound.add_argument('--task-id', type=int, required=True)
     inbound.add_argument('--cycle-id')
     inbound.add_argument('--intent', choices=('engaged', 'skip-for-now', 'start-work'), required=True)
-    upgrade = operations.add_parser('upgrade-local-first', help='Idempotent alias for automatic first-use runtime policy adoption')
-    upgrade.add_argument('--confirm-upgrade', action='store_true', help='Accepted for compatibility; no longer required')
     capability = operations.add_parser('capabilities', help='Report caller optional history inventory/attempt; no external discovery')
     capability.add_argument('--history-availability', choices=('unknown', 'unavailable', 'available'), default='unknown')
     capability.add_argument('--history-error')
@@ -1663,8 +1652,6 @@ def run_cli(directory, args):
         return driver.record_engagement(binding=args.binding, owner=args.owner,
             message_id=args.message_id, event_token=args.event_token, task_id=args.task_id,
             cycle_id=args.cycle_id, intent=args.intent)
-    if operation == 'upgrade-local-first':
-        return driver.upgrade_local_first(confirm=args.confirm_upgrade)
     if operation == 'capabilities':
         return driver.capabilities(history_available={'unknown': None, 'available': True, 'unavailable': False}[args.history_availability], history_error=args.history_error)
     if operation == 'native-plan':

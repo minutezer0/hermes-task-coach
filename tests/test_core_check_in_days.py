@@ -15,7 +15,6 @@ import test_core_coaching as engine_fixtures
 import test_core_local_first as runtime_fixtures
 import test_core_installed_skill as installed_fixtures
 
-from task_coach.cli import LEGACY_DDL, RECURRENCE_DDL, main
 from task_coach.coaching import eligible, choose_task, instant, sequences
 from task_coach.recurrence import same_snapshot
 from test_core_driver import BINDING
@@ -26,18 +25,6 @@ ALL_DAYS = 'mon,tue,wed,thu,fri,sat,sun'
 class DayCLI(unittest.TestCase):
     setUp = cli_fixtures.CLITest.setUp
     run_cli = cli_fixtures.CLITest.run_cli
-
-    def old_store(self, version):
-        self.run_cli('setup', '--weekdays', 'mon,wed,sat')
-        path = self.data / 'tasks.sqlite3'
-        path.unlink()
-        with closing(sqlite3.connect(path)) as db:
-            db.execute(LEGACY_DDL if version == 0 else RECURRENCE_DDL)
-            db.execute(f'PRAGMA user_version={version}')
-            db.execute("INSERT INTO tasks (id,title,notes,priority,status,created_at,updated_at) VALUES (7,'Keep task','Keep notes','high','open','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z')")
-            db.commit()
-        path.chmod(0o600)
-        return path
 
     def test_default_seven_days_and_saved_subsets_survive_setup(self):
         self.assertEqual(self.run_cli('init')['config']['weekdays'], ALL_DAYS.split(','))
@@ -76,57 +63,6 @@ class DayCLI(unittest.TestCase):
                 self.run_cli(*args, '--check-in-days', value, ok=False)
                 self.assertEqual((self.data/'tasks.sqlite3').read_bytes(), before)
 
-    def test_old_versions_read_all_without_migration_and_upgrade_explicitly(self):
-        for version in (0, 1):
-            with self.subTest(version=version):
-                self.data = self.root / f'v{version}'
-                store = self.old_store(version)
-                before = (store.read_bytes(), store.stat().st_mtime_ns)
-                task = self.run_cli('show', '7')
-                self.assertEqual(task['check_in_days'], 'all')
-                for command in (('list',), ('export',), ('search', 'Keep'), ('coach', 'preview', '--binding', json.dumps(engine_fixtures.BINDING), '--at', '2030-01-07T12:00:00Z')):
-                    self.run_cli(*command)
-                self.assertEqual((store.read_bytes(), store.stat().st_mtime_ns), before)
-                for args in (('add', 'Refused'), ('update', '7')):
-                    error = self.run_cli(*args, '--check-in-days', 'weekends', ok=False)
-                    self.assertIn('migrate', error.stderr)
-                    self.assertEqual((store.read_bytes(), store.stat().st_mtime_ns), before)
-                config = (self.data/'config.json').read_bytes()
-                self.assertEqual(self.run_cli('migrate'), {'version': 2})
-                migrated = self.run_cli('show', '7')
-                self.assertTrue(same_snapshot(task, migrated))
-                self.assertEqual((self.data/'config.json').read_bytes(), config)
-                before = (store.read_bytes(), store.stat().st_mtime_ns)
-                self.run_cli('migrate')
-                self.assertEqual((store.read_bytes(), store.stat().st_mtime_ns), before)
-                self.assertEqual(self.run_cli('update', '7', '--check-in-days', 'weekends')['check_in_days'], 'weekends')
-
-    def test_version_one_recurrence_and_old_writes_remain_supported(self):
-        store = self.old_store(1)
-        task = self.run_cli('update', '7', '--repeat', '1 week', '--due', '2024-01-01')
-        self.run_cli('add', 'Legacy all', '--check-in-days', 'all')
-        self.run_cli('migrate')
-        self.assertEqual(self.run_cli('show', '7'), task)
-        done = self.run_cli('done', '7', '--completed-at', '2024-01-08', '--expected-cycle', task['cycle_id'], '--completion-id', 'fictional-completion')
-        self.assertEqual(done['due'], '2024-01-15')
-        self.assertEqual(done['check_in_days'], 'all')
-
-    def test_v1_migration_failure_rolls_back(self):
-        import contextlib
-        import io
-        from task_coach import cli
-        store = self.old_store(1)
-        before = store.read_bytes()
-        validate = cli.validate_store
-        def reject_new(db):
-            validate(db)
-            if db.execute('PRAGMA user_version').fetchone()[0] == 2:
-                raise ValueError('synthetic v2 failure')
-        with patch.object(cli, 'validate_store', side_effect=reject_new), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(main(['--data-dir', str(self.data), 'migrate']), 2)
-        self.assertEqual(store.read_bytes(), before)
-        self.assertEqual(self.run_cli('show', '7')['check_in_days'], 'all')
-
     def test_bad_persisted_preference_refuses_without_mutation(self):
         self.run_cli('init')
         self.run_cli('add', 'Keep')
@@ -135,29 +71,9 @@ class DayCLI(unittest.TestCase):
             db.execute("UPDATE tasks SET check_in_days='sometimes'")
             db.commit()
         before = (store.read_bytes(), store.stat().st_mtime_ns)
-        for command in ('list', 'migrate', 'init'):
+        for command in ('list', 'init'):
             self.run_cli(command, ok=False)
             self.assertEqual((store.read_bytes(), store.stat().st_mtime_ns), before)
-
-    def test_migration_preserves_historical_draft_and_engine(self):
-        from task_coach.driver import Driver
-        self.old_store(1)
-        runtime = Driver(self.data)
-        runtime.configure(dict(binding=BINDING, platform='discord', destination='discord:123', channel_id='123', bot_id='456'), confirm=True)
-        runtime.preflight(now='2030-01-07T08:00:00Z')
-        event = runtime.coach.status()['episode']['events'][0]
-        draft = runtime.draft(event['token'], 'Fictional pre-upgrade draft', now=event['slot'])
-        with runtime.transaction() as state:
-            state['outbox'][event['token']]['task'].pop('check_in_days')
-        names = ('config.json', 'coach.sqlite3', 'outbox.sqlite3')
-        before = {name: ((self.data/name).read_bytes(), (self.data/name).stat().st_mtime_ns) for name in names}
-        self.run_cli('migrate')
-        self.assertEqual({name: ((self.data/name).read_bytes(), (self.data/name).stat().st_mtime_ns) for name in names}, before)
-        import subprocess
-        response = subprocess.CompletedProcess([], 0, stdout='{"success":true,"message_id":"100"}', stderr='')
-        with patch('task_coach.driver.subprocess.run', return_value=response):
-            result = runtime.dispatch(event['token'], draft['fence'], hermes='/fictional/hermes', now=event['slot'])
-        self.assertEqual(result['state'], 'accepted')
 
 
 class DayEngine(unittest.TestCase):
@@ -545,26 +461,6 @@ class DayWarnings(unittest.TestCase):
         widened = self.run_raw('setup', '--update', '--weekdays', 'sat,sun')
         self.assertEqual(widened.returncode, 0, widened.stderr)
         self.assertEqual(widened.stderr, '')
-
-    def test_legacy_store_reads_all_days_without_a_warning(self):
-        self.assertEqual(self.run_raw('init').returncode, 0)
-        for version, ddl, days in ((0, LEGACY_DDL, 'mon,tue,wed,thu,fri'), (1, RECURRENCE_DDL, 'sat,sun')):
-            with self.subTest(version=version):
-                store = self.data / 'tasks.sqlite3'
-                store.unlink()
-                with closing(sqlite3.connect(store)) as db:
-                    db.execute(ddl)
-                    db.execute('PRAGMA user_version=' + str(version))
-                    db.execute("INSERT INTO tasks (id, title, notes, priority, status, created_at, updated_at) "
-                               "VALUES (1, 'Legacy task', '', 'normal', 'open', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')")
-                    db.commit()
-                store.chmod(0o600)
-                narrowed = self.run_raw('setup', '--update', '--weekdays', days)
-                self.assertEqual(narrowed.returncode, 0, narrowed.stderr)
-                self.assertEqual(narrowed.stderr, '')
-                listed = self.run_raw('list')
-                self.assertEqual(listed.returncode, 0, listed.stderr)
-                self.assertEqual(json.loads(listed.stdout)[0]['check_in_days'], 'all')
 
     def test_reopening_a_conflicted_task_warns_again(self):
         self.assertEqual(self.run_raw('init').returncode, 0)

@@ -13,36 +13,6 @@ import time
 class RecurrenceCLI(unittest.TestCase):
     setUp = fixtures.CLITest.setUp
     run_cli = fixtures.CLITest.run_cli
-    def legacy(self):
-        self.run_cli('init')
-        store = self.data / 'tasks.sqlite3'
-        store.unlink()
-        with closing(sqlite3.connect(store)) as db:
-            db.execute('CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, notes TEXT NOT NULL, priority TEXT NOT NULL, status TEXT NOT NULL, due TEXT, snoozed_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)')
-            db.execute("INSERT INTO tasks VALUES (7, 'Keep task', 'Keep notes', 'high', 'open', NULL, NULL, '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')")
-            db.commit()
-        store.chmod(0o600)
-        return store
-
-    def test_migration_rolls_back_after_schema_change(self):
-        sys.path.insert(0, self.env['PYTHONPATH'])
-        from task_coach import cli
-        from unittest.mock import patch
-        import contextlib
-        import io
-        store = self.legacy()
-        before = store.read_bytes()
-        validate = cli.validate_store
-        def reject_new(db):
-            validate(db)
-            if db.execute('PRAGMA user_version').fetchone()[0] == 2:
-                raise ValueError('synthetic migration failure')
-        with patch.object(cli, 'validate_store', side_effect=reject_new), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(['--data-dir', str(self.data), 'migrate']), 2)
-        self.assertEqual(store.read_bytes(), before)
-        self.assertEqual(self.run_cli('show', '7')['notes'], 'Keep notes')
-        self.assertEqual(self.run_cli('migrate')['version'], 2)
-
     def test_first_use_concurrent_initializers_do_not_erase_tasks(self):
         code = "import pathlib,time,sys\nfrom task_coach.cli import main\nroot=pathlib.Path(sys.argv[1])\n(root/sys.argv[2]).touch()\ngate=root/'gate'\nwhile not gate.exists(): time.sleep(0.01)\nsys.exit(main(['--data-dir', str(root/'data'), 'init']))"
         children = [subprocess.Popen([sys.executable, '-c', code, str(self.root), 'ready'+str(n)], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for n in range(4)]
@@ -72,40 +42,21 @@ class RecurrenceCLI(unittest.TestCase):
         self.run_cli('done', '1', '--completed-at', '2024-01-01', '--expected-cycle', task['cycle_id'], '--completion-id', 'old', ok=False)
         self.assertEqual(self.run_cli('show', '1'), removed)
 
-    def test_explicit_migration_preserves_tasks_and_other_files(self):
-        store = self.legacy()
-        task = self.run_cli('show', '7')
-        before = (store.read_bytes(), store.stat().st_mtime_ns)
-        self.run_cli('list')
-        self.assertEqual((store.read_bytes(), store.stat().st_mtime_ns), before)
-        self.run_cli('coach', 'pause')
-        binding = dict(owner='fictional-owner', profile='fictional-profile', account='fictional-account', chat='123', thread='none')
-        route = dict(binding=binding, platform='discord', destination='discord:123', channel_id='123', bot_id='456')
-        self.run_cli('runtime', 'configure', '--route', json.dumps(route), '--confirm-setup')
-        preserved = {name: ((self.data/name).read_bytes(), (self.data/name).stat().st_mtime_ns) for name in ('config.json', 'coach.sqlite3', 'outbox.sqlite3')}
-        config = (self.data / 'config.json').read_bytes()
-        self.assertEqual(self.run_cli('migrate')['version'], 2)
-        migrated = self.run_cli('show', '7')
-        self.assertEqual({k: migrated[k] for k in task}, task)
-        self.assertIsNone(migrated['repeat_interval'])
-        self.assertEqual((self.data / 'config.json').read_bytes(), config)
-        self.assertEqual({name: ((self.data/name).read_bytes(), (self.data/name).stat().st_mtime_ns) for name in preserved}, preserved)
-        before = (store.read_bytes(), store.stat().st_mtime_ns)
-        self.run_cli('migrate')
-        self.assertEqual((store.read_bytes(), store.stat().st_mtime_ns), before)
-
     def test_unsupported_version_and_malformed_data_refuse_without_mutation(self):
-        store = self.legacy()
-        for statement in ('PRAGMA user_version=99', "PRAGMA user_version=0", "UPDATE tasks SET priority='urgent'"):
-            with closing(sqlite3.connect(store)) as db:
-                db.execute(statement)
-                db.commit()
-            if statement == 'PRAGMA user_version=0':
-                continue
-            before = (store.read_bytes(), store.stat().st_mtime_ns, sorted(p.name for p in self.data.iterdir()))
-            for command in ('list', 'migrate', 'init'):
-                self.run_cli(command, ok=False)
-                self.assertEqual((store.read_bytes(), store.stat().st_mtime_ns, sorted(p.name for p in self.data.iterdir())), before)
+        store = self.data / 'tasks.sqlite3'
+        for statement in ('PRAGMA user_version=99', 'PRAGMA user_version=1', "UPDATE tasks SET priority='urgent'"):
+            with self.subTest(statement=statement):
+                if store.exists():
+                    store.unlink()
+                self.run_cli('init')
+                self.run_cli('add', 'Keep task', '--notes', 'Keep notes', '--priority', 'high')
+                with closing(sqlite3.connect(store)) as db:
+                    db.execute(statement)
+                    db.commit()
+                before = (store.read_bytes(), store.stat().st_mtime_ns, sorted(p.name for p in self.data.iterdir()))
+                for command in ('list', 'init'):
+                    self.run_cli(command, ok=False)
+                    self.assertEqual((store.read_bytes(), store.stat().st_mtime_ns, sorted(p.name for p in self.data.iterdir())), before)
 
     def test_edit_removal_preserves_unrelated_fields_and_guards_status(self):
         self.run_cli('init')
@@ -156,16 +107,16 @@ class RecurrenceCLI(unittest.TestCase):
     def test_versioned_incompatible_ddl_refuses_without_touching_files(self):
         self.run_cli('init')
         sys.path.insert(0, self.env['PYTHONPATH'])
-        from task_coach.cli import RECURRENCE_DDL
+        from task_coach.cli import TASK_DDL
         store = self.data / 'tasks.sqlite3'
         store.unlink()
         with closing(sqlite3.connect(store)) as db:
-            db.execute(RECURRENCE_DDL.replace('AUTOINCREMENT', 'AUTOINCREMENT CHECK(id > 0)'))
+            db.execute(TASK_DDL.replace('AUTOINCREMENT', 'AUTOINCREMENT CHECK(id > 0)'))
             db.execute('PRAGMA user_version=1')
             db.commit()
         store.chmod(0o600)
         before = (store.read_bytes(), store.stat().st_mtime_ns, sorted(p.name for p in self.data.iterdir()))
-        for command in ('list', 'migrate', 'init'):
+        for command in ('list', 'init'):
             self.run_cli(command, ok=False)
             self.assertEqual((store.read_bytes(), store.stat().st_mtime_ns, sorted(p.name for p in self.data.iterdir())), before)
 

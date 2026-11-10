@@ -141,7 +141,10 @@ class DefaultPolicyTest(__import__('unittest').TestCase):
 
     def test_alias_needs_no_second_optin(self):
         runtime = self.legacy()
-        self.assertEqual(runtime.upgrade_local_first(), {'after_day': '2030-01-07'})
+        # Adoption happens inside the ordinary write path; no separate upgrade
+        # command exists to opt in twice.
+        self.assertEqual(runtime.status()['local_first'], {'after_day': '2030-01-07'})
+        self.assertFalse(hasattr(runtime, 'upgrade_local_first'))
 
     def test_native_plan_does_not_adopt_or_require_history_for_fresh_install(self):
         runtime = self.legacy()
@@ -149,11 +152,9 @@ class DefaultPolicyTest(__import__('unittest').TestCase):
         plan = runtime.native_plan('/fictional/profile', python='/usr/bin/python3',
                                    helper='/fictional/helper', hermes='/fictional/hermes')
         self.assertEqual(before, self.snapshot())
-        # Before persisted adoption the legacy episode is still effective.
-        self.assertIn('preserved legacy episode retains its honest history gates', plan['cron_argv'][4])
         self.assertIn('Never fetch Discord history in routine cron', plan['cron_argv'][4])
         self.assertIn('runtime capabilities', plan['cron_argv'][4])
-        self.assertIn('preserve legacy gates', plan['inbound_instruction'])
+        self.assertNotIn('legacy gates', plan['cron_argv'][4] + plan['inbound_instruction'])
         self.assertIn('With history OFF make no external history reads', plan['inbound_instruction'])
         (self.data / 'outbox.sqlite3').unlink()
         plan = runtime.native_plan('/fictional/profile', python='/usr/bin/python3',

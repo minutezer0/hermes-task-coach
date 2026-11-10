@@ -60,27 +60,6 @@ class HistoryGuidanceTest(unittest.TestCase):
             self.assertFalse(data.exists())
             self.assertFalse(profile.exists())
 
-    def test_legacy_preview_retains_gates_without_history_fetch_instructions(self):
-        import json
-        import sqlite3
-        from contextlib import closing
-        with tempfile.TemporaryDirectory() as directory:
-            driver = Driver(Path(directory) / 'data')
-            driver.directory.mkdir(mode=0o700)
-            driver.configure(ROUTE, confirm=True)
-            database = driver.directory / 'outbox.sqlite3'
-            with closing(sqlite3.connect(database)) as db:
-                state = json.loads(db.execute('SELECT value FROM runtime').fetchone()[0])
-                state.pop('local_first', None)
-                db.execute('UPDATE runtime SET value=?', (json.dumps(state),))
-                db.commit()
-            before = database.read_bytes()
-            plan = driver.native_plan('/fictional/profile', python='/usr/bin/python3', helper='/fictional/helper.py', hermes='/fictional/hermes')
-            self.assertEqual(database.read_bytes(), before)
-            self.assertIn('retains its honest history gates', plan['cron_argv'][4])
-            self.assertIn('Never fetch Discord history in routine cron', plan['cron_argv'][4])
-            self.assertNotIn('fetch and validate fresh complete', plan['cron_argv'][4])
-
     def test_public_onboarding_and_versions(self):
         skill = (ROOT / 'skills/task-coach/SKILL.md').read_text()
         self.assertIn('Default: No', skill)

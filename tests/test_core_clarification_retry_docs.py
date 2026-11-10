@@ -38,7 +38,7 @@ class RetryDocumentationTest(unittest.TestCase):
         self.assertIn('openers AND followups', prompt)
         self.assertIn('Never fetch Discord history in routine cron', prompt)
         self.assertIn('Optional history failure', prompt)
-        self.assertIn('preserved legacy episode retains its honest history gates', prompt)
+        self.assertNotIn('legacy gates', prompt)
         self.assertIn('runtime record-engagement', plan['inbound_instruction'])
         self.assertIn('Ask naturally which task', plan['inbound_instruction'])
         self.assertIn('only an explicitly requested reply-recovery', plan['inbound_instruction'])
