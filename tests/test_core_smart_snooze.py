@@ -69,13 +69,11 @@ class SmartSnoozeTest(unittest.TestCase):
         expired = runtime.status(now='2030-01-08T08:00:00Z')
         self.assertFalse(expired['notification_policy']['active'])
 
-    def test_off_start_work_rejects_old_window_before_audit_or_engine_change(self):
+    def test_off_start_work_accepts_reply_from_old_window_without_hold(self):
         runtime, root, row = self.accepted(enabled=False)
-        before = runtime.coach.status()
-        with self.assertRaisesRegex(ValueError, 'current'):
-            self.start(runtime, row, '2030-01-08T10:00:00Z')
-        self.assertEqual(runtime.coach.status(), before)
-        self.assertFalse(runtime.status().get('engagements'))
+        self.assertTrue(self.start(runtime, row, '2030-01-08T10:00:00Z')['engaged'])
+        self.assertEqual(runtime.coach.status()['episode']['stopped'], 'owner-engaged')
+        self.assertFalse(runtime.status().get('smart_snooze_hold'))
 
     def test_hold_survives_clock_regression(self):
         from datetime import datetime, timedelta

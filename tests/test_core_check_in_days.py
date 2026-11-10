@@ -425,6 +425,55 @@ class DayReplies(unittest.TestCase):
     def test_start_work_outside_window_does_not_create_smart_snooze_hold(self):
         runtime, event, _ = self.accepted()
         runtime.smart_snooze(enabled=True)
-        with self.assertRaises(ValueError):
-            runtime.record_engagement(**self.request(event, '2030-01-14T08:00:00Z', 'start-work'))
+        self.assertTrue(runtime.record_engagement(**self.request(event, '2030-01-14T08:00:00Z', 'start-work'))['engaged'])
         self.assertFalse(runtime.status().get('smart_snooze_hold'))
+
+    def test_reply_after_rollover_preserves_new_plan(self):
+        runtime, event, _ = self.accepted()
+        self.cli('add', 'Fictional weekday task', '--check-in-days', 'weekdays')
+        later = '2030-01-14T08:00:00Z'
+        runtime.preflight(now=later)
+        plan = runtime.coach.status()['episode']
+        self.assertNotEqual(plan['task_id'], 1)
+        self.assertTrue(runtime.record_engagement(**self.request(event, later))['engaged'])
+        self.assertEqual(runtime.coach.status()['episode'], plan)
+        self.assertTrue(runtime.record_engagement(**self.request(event, later))['engaged'])
+
+    def test_start_work_after_rollover_uses_current_window_for_hold(self):
+        runtime, event, _ = self.accepted()
+        runtime.smart_snooze(enabled=True)
+        later = '2030-01-14T12:00:00Z'
+        runtime.preflight(now=later)
+        self.assertTrue(runtime.record_engagement(**self.request(event, later, 'start-work'))['engaged'])
+        hold = runtime.status()['smart_snooze_hold']
+        self.assertEqual(hold['day'], '2030-01-14')
+        self.assertEqual(hold['expires'], '2030-01-14T17:00:00+00:00')
+        self.assertEqual(runtime.preflight(now=later)['reason'], 'smart-snooze')
+
+    def test_delayed_reply_cannot_cross_recurring_task_cycles(self):
+        runtime, event, _ = self.accepted()
+        task = self.cli('update', '1', '--repeat', '1 day', '--due', '2024-01-01')
+        later = '2030-01-14T08:00:00Z'
+        runtime.preflight(now=later)
+        request = self.request(event, later)
+        for cycle in (None, task['cycle_id']):
+            with self.subTest(cycle=cycle), self.assertRaises(ValueError):
+                runtime.record_engagement(**dict(request, cycle_id=cycle))
+        self.assertFalse(runtime.status().get('engagements'))
+
+    def test_cross_window_context_never_guesses_between_tasks(self):
+        import subprocess
+        runtime, first, _ = self.accepted()
+        self.cli('add', 'Fictional weekday task', '--check-in-days', 'weekdays')
+        runtime.preflight(now='2030-01-14T08:00:00Z')
+        second = runtime.coach.status()['episode']['events'][0]
+        draft = runtime.draft(second['token'], 'Fictional Monday check-in', now=second['slot'])
+        response = subprocess.CompletedProcess([], 0, stdout='{"success":true,"message_id":"101"}', stderr='')
+        with patch('task_coach.driver.subprocess.run', return_value=response):
+            runtime.dispatch(second['token'], draft['fence'], hermes='/fictional/hermes', now=second['slot'])
+        self.assertIsNone(runtime.context(BINDING))
+        self.assertEqual(runtime.context(BINDING, reply_to_message_id='100')['task_id'], 1)
+        self.assertEqual(runtime.context(BINDING, reply_to_message_id='101')['task_id'], 2)
+        plan = runtime.coach.status()['episode']
+        self.assertTrue(runtime.record_engagement(**self.request(first, second['slot']))['engaged'])
+        self.assertEqual(runtime.coach.status()['episode'], plan)

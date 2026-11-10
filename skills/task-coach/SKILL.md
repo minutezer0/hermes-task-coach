@@ -22,7 +22,7 @@ route. Synthetic tests and saved settings are not live platform verification.
 
 Smart Snooze is a **hold-only notification preference**, default OFF on fresh and
 all known older runtimes missing the field. With it ON, a genuine explicit
-“start working now” reply to a current accepted/delivered check-in or follow-up
+“start working now” reply to an accepted/delivered check-in or follow-up
 records `start-work` and holds **all** Task Coach automated notifications for the
 remaining current configured local notification window, including other tasks and
 legacy clarification retries. It does not change task status, completion, snooze,
@@ -47,7 +47,7 @@ re-interviewing. Persist only the explicit choice and read back. Never ask this
 question for local-only task setup. This choice alone never activates cron.
 
 Record clear engagement **BEFORE substantive assistance, memory recall or
-delegation**, using `runtime record-engagement --binding JSON --owner OWNER
+delegation**, when an applicable accepted check-in exists, using `runtime record-engagement --binding JSON --owner OWNER
 --message-id INBOUND_ID --event-token EVENT --task-id TASK [--cycle-id CYCLE]
 --intent start-work` only for genuine explicit agreement to begin working now.
 Use `engaged` for general engagement and `skip-for-now` for a skip. Bind the genuine
@@ -594,6 +594,37 @@ deadlines or snoozes from conversation. Checklist lines may live in notes; check
 one entry is not permission to complete the task. Occurrence generation, external providers and native subtasks are not implemented.
 Completion-based recurrence reuses the same task, as described below.
 
+## Replies and task context
+
+Use the same conversational reply workflow on any day, outside notification
+hours, or in a later notification window. Notification schedules govern only
+proactive messages; they do not grant permission to answer the user.
+
+Use the conversation, trusted reply references and saved task/check-in records
+to identify the task. `runtime context --binding JSON` can suggest an unambiguous
+accepted check-in; an actual reply target can be passed with
+`--reply-to-message-id TARGET`. If it returns null, use `list`, `search` and
+`show` in the approved data scope to find the task named in the conversation.
+Clear context needs no extra confirmation. If the task is ambiguous, ask which
+one; never guess the newest check-in. Do not scan Discord history automatically.
+
+For clear engagement with an accepted check-in in the task’s current recurrence
+cycle, record the genuine owner/message/task/event/cycle using
+`runtime record-engagement`, even after the source daily plan has rolled over.
+A retained accepted event is sufficient; the source event need not be in today’s
+plan. Old replies never stop an unrelated newer task sequence or advance a
+recurring cycle. A start-work reply is accepted outside notification hours without
+creating a Smart Snooze hold. During an allowed window, Smart Snooze ON can hold
+notifications through that current window’s end, including for a reply to an
+older check-in. Retries never renew a hold or create one later.
+
+If there is no applicable accepted check-in, continue ordinary task help without
+inventing an event or claiming notifications were suppressed. Completed, snoozed
+or not-yet-due tasks can still be discussed; a refused engagement record does not
+prohibit conversation. Keep task edits and completion tied to explicit user
+intent and the current task/cycle. Never reinterpret an old completion request
+as a request to complete a new recurring cycle.
+
 ## Task check-in days (0.1.0rc9)
 
 Each task has `check_in_days`: `weekdays`, `weekends`, or `all` (default).
@@ -604,7 +635,8 @@ hours. Overdue dates and high priority never override either limit. User-initiat
 task help, replies and edits remain available any day, including outside the
 global notification window. Use task lifecycle availability for inbound replies;
 the check-in day filter applies only to proactive messages. Preserve existing
-task/cycle/identity checks and Smart Snooze's current-window requirements.
+task/cycle/identity checks. Smart Snooze holds only the remaining current allowed
+window: a start-work reply outside it is accepted without a hold or future hold.
 
 When adding a task for proactive check-ins, first read the saved global window.
 **Only if all seven distinct days are enabled**, ask: “Check-ins on weekdays,

@@ -4,7 +4,7 @@
 
 Smart Snooze is a **hold-only notification preference**, default OFF on fresh and
 all known older runtimes missing the field. With it ON, a genuine explicit
-“start working now” reply to a current accepted/delivered check-in or follow-up
+“start working now” reply to an accepted/delivered check-in or follow-up
 records `start-work` and holds **all** Task Coach automated notifications for the
 remaining current configured local notification window, including other tasks and
 legacy clarification retries. It does not change task status, completion, snooze,
@@ -29,7 +29,7 @@ re-interviewing. Persist only the explicit choice and read back. Never ask this
 question for local-only task setup. This choice alone never activates cron.
 
 Record clear engagement **BEFORE substantive assistance, memory recall or
-delegation**, using `runtime record-engagement --binding JSON --owner OWNER
+delegation**, when an applicable accepted check-in exists, using `runtime record-engagement --binding JSON --owner OWNER
 --message-id INBOUND_ID --event-token EVENT --task-id TASK [--cycle-id CYCLE]
 --intent start-work` only for genuine explicit agreement to begin working now.
 Use `engaged` for general engagement and `skip-for-now` for a skip. Bind the genuine
@@ -930,3 +930,12 @@ stop older writers first. Fresh stores and successful migrations use task schema
 2, preserving task IDs, recurrence cycles, config, engine and runtime audits.
 Stale drafts refuse changed preferences; missing historical days mean `all` for
 snapshot comparison. No migration resets, catch-up sends or extra task budgets.
+
+Replies use conversation and saved task context independently of the notification
+schedule, including after daily rollover. Clear task references can be used
+directly; ambiguous references need a natural clarification. Recording engagement
+can use a retained accepted receipt for the current task/cycle. A start-work reply
+outside a window is accepted without a hold; inside an allowed window, Smart
+Snooze ON can hold the remainder of that current window. Replays never create
+future holds. An unavailable engagement record does not prevent ordinary task
+help or authorize guessing an event, completing a task or changing a newer cycle.

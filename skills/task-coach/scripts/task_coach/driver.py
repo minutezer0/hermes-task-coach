@@ -720,14 +720,17 @@ class Driver:
                 raise ValueError('inbound identity already consumed by clarification')
             row = runtime['outbox'].get(event_token)
             if not row or row['state'] not in ('accepted', 'confirmed') or row['task']['id'] != task_id:
-                raise ValueError('exact accepted current task event required')
+                raise ValueError('exact accepted task event required')
             with self.coach._transaction() as engine:
                 sequence = event_episode(engine['episode'], event_token)
                 task = next((t for t in self.coach.tasks() if t['id'] == task_id), None)
                 from .coaching import task_available
-                if (not sequence or sequence['binding'] != binding or sequence['task_id'] != task_id
-                        or sequence.get('cycle_id') != cycle_id or not same_cycle(row['task'], task)
-                        or not same_cycle(sequence, task) or not task_available(task, now, self.coach.config()['timezone'])):
+                # A retained receipt identifies the reply even after daily rollover.
+                # Only a still-present source sequence may be stopped by that reply.
+                if (row['task'].get('cycle_id') != cycle_id or not same_cycle(row['task'], task)
+                        or not task_available(task, now, self.coach.config()['timezone'])
+                        or sequence and (sequence['binding'] != binding or sequence['task_id'] != task_id
+                                         or not same_cycle(sequence, task))):
                     raise ValueError('stale or unavailable engagement sequence')
                 result = dict(engaged=True, task_id=task_id, event_token=event_token,
                               provenance='agent-mediated-explicit-intent')
@@ -738,17 +741,17 @@ class Driver:
                     config = self.coach.config()
                     day = now.astimezone(ZoneInfo(config['timezone'])).date().isoformat()
                     minutes = window_minutes(day, config)
-                    if (sequence['day'] != day or sequence['config'] != config or not minutes
-                            or not minutes[0] <= now < minutes[-1] + timedelta(minutes=1)
-                            or now < instant(row['receipt']['delivered_at'])
+                    if (now < instant(row['receipt']['delivered_at'])
                             or engine['last_tick'] and now < instant(engine['last_tick'])):
-                        raise ValueError('start-work requires the current accepted notification window')
-                    if runtime.get('smart_snooze_enabled', False) and not self._active_hold(runtime, now):
+                        raise ValueError('start-work clock regressed')
+                    in_window = minutes and minutes[0] <= now < minutes[-1] + timedelta(minutes=1)
+                    if (in_window and runtime.get('smart_snooze_enabled', False)
+                            and not self._active_hold(runtime, now)):
                         runtime['smart_snooze_hold'] = dict(route=runtime['route'], day=day, config=config,
                             event_token=event_token, task_id=task_id, message_id=message_id,
                             started_at=now.isoformat(), expires=(minutes[-1] + timedelta(minutes=1)).isoformat())
                 self.validate_state(runtime)
-                if intent != 'start-work':
+                if sequence and intent != 'start-work':
                     sequence['stopped'] = sequence['stopped'] or 'owner-engaged'
             return result
 
@@ -1418,9 +1421,12 @@ class Driver:
             'Never revive missed slots or resend attempted/uncertain events. Actual failed/uncertain sends require [CRON_FAILURE]; quiet guards and optional verification warnings are separate. '
             'No final chat delivery: delivery is handled by the helper.')
         instruction = ('For normal inbound ONLY matching the confirmed owner/profile/account/chat/thread binding, load task-coach and inspect runtime status/context. '
-            'Record explicit owner intent and clear task engagement BEFORE substantive assistance, memory recall or delegation. Use trusted runtime record-engagement --binding JSON --owner OWNER --message-id INBOUND_ID --event-token EVENT --task-id TASK '
+            'Record explicit owner intent and clear task engagement BEFORE substantive assistance, memory recall or delegation when an applicable accepted check-in exists. Use trusted runtime record-engagement --binding JSON --owner OWNER --message-id INBOUND_ID --event-token EVENT --task-id TASK '
             '[--cycle-id CYCLE] --intent start-work for genuine explicit agreement to begin working now; use engaged for generic engagement or skip-for-now for a skip. Never reinterpret old engaged audit as start-work. Use the genuine inbound message ID and current task/event/cycle; clarify ambiguity, never invent IDs or history. Read back before claiming suppression. No history is required for local-first engagement. '
-            'Ask naturally which task when ambiguous; do not invent reply references, complete/snooze tasks or globally freeze local-first work. '
+            'Reply handling is independent of notification days, hours and daily-plan rollover. Use conversation and saved tasks/check-ins to identify the task. Ask naturally which task when ambiguous; never guess the newest. '
+            'A retained accepted event for the current task/cycle may record engagement after rollover; do not invent reply references or events. If no applicable accepted event exists, continue ordinary task help without claiming suppression. '
+            'Start-work outside an allowed window records engagement without a hold; inside one, Smart Snooze ON may hold the remainder of the current window even for an older check-in. Never create future holds from retries. '
+            'Do not complete/snooze tasks or globally freeze local-first work without explicit intent. '
             'Inspect runtime history-preference and runtime capabilities --history-availability unknown|unavailable|available; tool availability is not consent or delivery verification. '
             'With history OFF make no external history reads. With exact-route consent ON, only an explicitly requested reply-recovery or delivery-verification may use '
             'runtime history-plan --purpose PURPOSE --target DECIMAL_ID --confirm-history. Save the returned dict grant privately, then fetch at most 25 latest messages, '
