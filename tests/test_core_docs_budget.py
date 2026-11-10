@@ -15,6 +15,9 @@ BUDGETS = {
 
 
 def paragraphs(text):
+    # Fenced code blocks are commands, not prose: an identical command example in
+    # two documents is not duplication. Only prose is compared.
+    text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
     blocks = []
     for block in re.split(r'\n\s*\n', text):
         normalized = ' '.join(block.split())
