@@ -1,7 +1,7 @@
 ---
 name: task-coach
 description: "Use when managing tasks or coaching follow-through. Guide local task setup and optional native Hermes check-ins."
-version: 0.1.0-rc.9
+version: 0.1.0-rc.10
 license: MIT
 platforms: [linux]
 metadata:
@@ -661,6 +661,13 @@ task preferences; new tasks still default to `all` when the global window is not
 all seven days. Never silently rewrite task choices or revive stopped/missed
 opportunities after a task edit. Read back the saved choice and explain the next
 eligible day without promising a specific send time.
+
+As of 0.1.0rc10, `add`, `update --check-in-days` (when the saved value changes),
+reopening through `update --status open`, and any `setup --update --weekdays`
+change print a non-blocking stderr warning when saved task days never meet the
+configured days. The write succeeds and the task stays saved; no check-in occurs
+until the two settings overlap. Report the warning rather than widening the
+global days or changing the task's choice without permission.
 
 Fresh setups default to all seven global days. Saved global preferences remain
 unchanged. Older tasks without this field read as `all` without writes. Fresh

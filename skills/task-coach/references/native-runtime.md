@@ -923,6 +923,13 @@ seven distinct days. Otherwise skip it and default new tasks to `all`. Explicit
 choices and existing task preferences survive global-window changes; use their
 intersection, never silently widen either setting.
 
+As of 0.1.0rc10, `add`, `update --check-in-days` (when the saved value changes),
+reopening through `update --status open`, and any `setup --update --weekdays`
+change print a non-blocking stderr warning when saved task days never meet the
+configured days. The write succeeds and the task stays saved; no check-in occurs
+until the two settings overlap. Explain that instead of widening the global days
+or rewriting the task's choice without permission.
+
 Use `add TITLE --check-in-days weekends` or `update ID --check-in-days weekdays`
 and read back. Older tasks read as `all` without writes. Existing exact schema 0
 or 1 stores require an approved explicit `migrate` before setting non-`all` days;
