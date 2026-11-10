@@ -1409,6 +1409,7 @@ class Driver:
             + '. Re-run runtime preflight and runtime capabilities. Never fetch Discord history in routine cron, even with saved opt-in. '
             'Do not call history-plan or any external history tool in scheduled turns. No hosted connector, source imports, raw credentials or alternate APIs. '
             'For local-first work local eligibility, recorded engagement, windows, spacing, budgets and pause authorize openers AND followups without history. '
+            'Task check-in days (weekdays/weekends/all) narrow the global allowed days for both openers and followups; never override them for overdue tasks. '
             'A smart-snooze guard suppresses ALL Task Coach notifications until the saved window expiry; stop without drafting or sending. Never reset or replay held opportunities. '
             'Compose only for the returned current task; runtime draft then runtime dispatch --hermes ' + str(hermes_path) + '. '
             'Native Hermes send is the only transport. Accepted is transport acceptance, not independently verified arrival. '

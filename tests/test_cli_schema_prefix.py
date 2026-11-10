@@ -18,19 +18,20 @@ class SchemaPrefixCLI(unittest.TestCase):
 
     def test_task_stores_reject_sqliteX_objects_without_mutation(self):
         sys.path.insert(0, self.env['PYTHONPATH'])
-        from task_coach.cli import LEGACY_DDL
-        for version in (0, 1):
+        from task_coach.cli import LEGACY_DDL, RECURRENCE_DDL
+        for version in (0, 1, 2):
             for kind in ('table', 'trigger'):
                 for command in ('migrate', 'list', 'init'):
                     with self.subTest(version=version, kind=kind, command=command):
                         self.data = self.root / f'data-{version}-{kind}-{command}'
                         self.run_cli('init')
                         store = self.data / 'tasks.sqlite3'
-                        if version == 0:
+                        if version < 2:
                             store.unlink()
                         with closing(sqlite3.connect(store)) as db:
-                            if version == 0:
-                                db.execute(LEGACY_DDL)
+                            if version < 2:
+                                db.execute(LEGACY_DDL if version == 0 else RECURRENCE_DDL)
+                                db.execute(f'PRAGMA user_version={version}')
                             for key, title in ((1, 'First fictional task'), (2, 'Unrelated fictional task')):
                                 db.execute("INSERT INTO tasks (id,title,notes,priority,status,created_at,updated_at) VALUES (?,?,?,'normal','open',?,?)",
                                            (key, title, 'Preserve notes', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z'))

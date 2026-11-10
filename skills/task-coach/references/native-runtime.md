@@ -907,3 +907,26 @@ Other tests exercise fail-closed errors, uncertainty, pause/task changes, fencin
 late reconciliation and wrapper behavior. Copied-skill and built-wheel tests verify
 resources independently from source metadata. Actual user-authorized platform
 tests remain separate. Only the Discord history adapter is currently implemented.
+
+## Per-task check-in days (rc9)
+
+New setups allow all seven global days; saved configurations keep their days.
+Tasks use `check_in_days=weekdays|weekends|all` (default `all`) to narrow that
+window for both initial check-ins and follow-ups in the configured timezone.
+Selection, preparation and final dispatch enforce the current task preference;
+overdue dates never bypass it. Automated clarification retries also respect the
+current day preferences of every candidate. Manual task commands remain available
+on any day.
+
+Ask the task-add day question only when the saved global window includes all
+seven distinct days. Otherwise skip it and default new tasks to `all`. Explicit
+choices and existing task preferences survive global-window changes; use their
+intersection, never silently widen either setting.
+
+Use `add TITLE --check-in-days weekends` or `update ID --check-in-days weekdays`
+and read back. Older tasks read as `all` without writes. Existing exact schema 0
+or 1 stores require an approved explicit `migrate` before setting non-`all` days;
+stop older writers first. Fresh stores and successful migrations use task schema
+2, preserving task IDs, recurrence cycles, config, engine and runtime audits.
+Stale drafts refuse changed preferences; missing historical days mean `all` for
+snapshot comparison. No migration resets, catch-up sends or extra task budgets.

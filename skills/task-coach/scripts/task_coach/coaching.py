@@ -29,12 +29,21 @@ def instant(value):
 
 
 def eligible(task, now, zone='UTC'):
+    if not check_in_day_allowed(task, now, zone):
+        return False
     if task.get('repeat_interval'):
         due = task['due']
         due = datetime.combine(datetime.fromisoformat(due).date(), time(), ZoneInfo(zone)) if len(due) == 10 else instant(due)
         if instant(due) > instant(now):
             return False
     return task['status'] == 'open' and (not task['snoozed_until'] or instant(task['snoozed_until']) <= now)
+
+
+def check_in_day_allowed(task, now, zone='UTC'):
+    """Task days narrow the global window; missing historical preferences mean all."""
+    days = task.get('check_in_days', 'all')
+    weekend = instant(now).astimezone(ZoneInfo(zone)).weekday() >= 5
+    return days == 'all' or (days == 'weekends' and weekend) or (days == 'weekdays' and not weekend)
 
 
 def task_weight(task, now, zone):
@@ -334,13 +343,13 @@ class Coach:
                 raise
 
     def tasks(self):
-        from .cli import validate_store
+        from .cli import validate_store, task_record
         path = self.directory / 'tasks.sqlite3'
         safe_path(path)
         with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as db:
             db.row_factory = sqlite3.Row
             validate_store(db)
-            tasks = [dict(row) for row in db.execute('SELECT * FROM tasks ORDER BY id')]
+            tasks = [task_record(row) for row in db.execute('SELECT * FROM tasks ORDER BY id')]
             from .cli import due_value
             try:
                 for task in tasks:
