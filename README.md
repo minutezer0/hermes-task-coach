@@ -9,7 +9,7 @@ No messaging account is needed. Optional automatic check-ins currently support
 
 New setups default to every day, 09:00–17:00; existing saved days stay unchanged.
 Each task supports **weekdays / weekends / all** for both initial check-ins and
-follow-ups. Task days always stay within your global allowed days and hours,
+follow-ups. Task days narrow your global allowed days and hours,
 using your configured timezone. `all` means all days your global window permits.
 
 When your global window includes all seven days, Task Coach asks for the task’s
@@ -23,6 +23,12 @@ working on a task on any day, even outside its check-in days or hours.
 python3 "<skill_dir>/scripts/task-coach.py" add "Garden" --check-in-days weekends
 python3 "<skill_dir>/scripts/task-coach.py" update ID --check-in-days weekdays
 ```
+
+As of 0.1.0rc10, a task whose days never overlap the configured days is kept but
+cannot be scheduled. `add`, `update --check-in-days` (when the saved value
+changes) and any `setup --update --weekdays` change print a non-blocking warning
+on stderr, so you can stage a task before widening the global window. `list` and
+`show` remain authoritative for what was saved.
 
 Older tasks read as `all` without changing storage. To use non-`all` preferences
 on an existing store, stop older writers and explicitly run `migrate` with user

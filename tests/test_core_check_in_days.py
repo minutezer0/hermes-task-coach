@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import random
 import sqlite3
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -477,3 +478,90 @@ class DayReplies(unittest.TestCase):
         plan = runtime.coach.status()['episode']
         self.assertTrue(runtime.record_engagement(**self.request(first, second['slot']))['engaged'])
         self.assertEqual(runtime.coach.status()['episode'], plan)
+
+
+class DayWarnings(unittest.TestCase):
+    """A day conflict is reported on stderr but never blocks the requested write."""
+
+    setUp = cli_fixtures.CLITest.setUp
+    data: Path
+    env: dict
+
+    def run_raw(self, *args):
+        command = [sys.executable, '-m', 'task_coach', '--data-dir', str(self.data), *args]
+        return subprocess.run(command, env=self.env, text=True, capture_output=True)
+
+    def test_add_keeps_the_task_and_warns_only_for_an_empty_intersection(self):
+        self.assertEqual(self.run_raw('init').returncode, 0)
+        narrowed = self.run_raw('setup', '--update', '--weekdays', 'mon,tue,wed,thu,fri')
+        self.assertEqual(narrowed.returncode, 0, narrowed.stderr)
+        self.assertEqual(narrowed.stderr, '')
+        conflict = self.run_raw('add', 'Fictional weekend chore', '--check-in-days', 'weekends')
+        self.assertEqual(conflict.returncode, 0, conflict.stderr)
+        self.assertEqual(json.loads(conflict.stdout)['check_in_days'], 'weekends')
+        self.assertIn('task 1', conflict.stderr)
+        self.assertIn("'weekends'", conflict.stderr)
+        self.assertIn("'mon,tue,wed,thu,fri'", conflict.stderr)
+        self.assertIn('will not be checked in until they overlap', conflict.stderr)
+        for days in ('weekdays', 'all'):
+            clean = self.run_raw('add', 'Fictional ' + days, '--check-in-days', days)
+            self.assertEqual(clean.returncode, 0, clean.stderr)
+            self.assertEqual(clean.stderr, '')
+        self.assertEqual(len(json.loads(self.run_raw('list').stdout)), 3)
+
+    def test_update_warns_only_when_the_task_days_change(self):
+        self.assertEqual(self.run_raw('init').returncode, 0)
+        self.assertEqual(self.run_raw('add', 'Fictional task').returncode, 0)
+        narrowed = self.run_raw('setup', '--update', '--weekdays', 'mon,tue,wed,thu,fri')
+        self.assertEqual(narrowed.stderr, '')
+        renamed = self.run_raw('update', '1', '--title', 'Renamed')
+        self.assertEqual(renamed.returncode, 0, renamed.stderr)
+        self.assertEqual(renamed.stderr, '')
+        conflict = self.run_raw('update', '1', '--check-in-days', 'weekends')
+        self.assertEqual(conflict.returncode, 0, conflict.stderr)
+        self.assertEqual(json.loads(conflict.stdout)['check_in_days'], 'weekends')
+        self.assertIn('will not be checked in until they overlap', conflict.stderr)
+        repeat = self.run_raw('update', '1', '--check-in-days', 'weekends')
+        self.assertEqual(repeat.stderr, '')
+
+    def test_global_day_change_warns_for_open_tasks_only(self):
+        self.assertEqual(self.run_raw('init').returncode, 0)
+        self.assertEqual(self.run_raw('add', 'Fictional weekend chore', '--check-in-days', 'weekends').stderr, '')
+        self.assertEqual(self.run_raw('add', 'Fictional done chore', '--check-in-days', 'weekends').returncode, 0)
+        self.assertEqual(self.run_raw('update', '2', '--status', 'done').returncode, 0)
+        self.assertEqual(self.run_raw('add', 'Fictional cancelled chore', '--check-in-days', 'weekends').returncode, 0)
+        self.assertEqual(self.run_raw('update', '3', '--status', 'cancelled').returncode, 0)
+        narrowed = self.run_raw('setup', '--update', '--weekdays', 'mon,tue,wed,thu,fri')
+        self.assertEqual(narrowed.returncode, 0, narrowed.stderr)
+        self.assertIn('task 1', narrowed.stderr)
+        self.assertNotIn('task 2', narrowed.stderr)
+        self.assertNotIn('task 3', narrowed.stderr)
+        repeated = self.run_raw('setup', '--update', '--weekdays', 'mon,tue,wed,thu,fri')
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(repeated.stderr, '')
+        untouched = self.run_raw('setup', '--update', '--notification-start', '08:00')
+        self.assertEqual(untouched.returncode, 0, untouched.stderr)
+        self.assertEqual(untouched.stderr, '')
+        widened = self.run_raw('setup', '--update', '--weekdays', 'sat,sun')
+        self.assertEqual(widened.returncode, 0, widened.stderr)
+        self.assertEqual(widened.stderr, '')
+
+    def test_legacy_store_reads_all_days_without_a_warning(self):
+        self.assertEqual(self.run_raw('init').returncode, 0)
+        for version, ddl, days in ((0, LEGACY_DDL, 'mon,tue,wed,thu,fri'), (1, RECURRENCE_DDL, 'sat,sun')):
+            with self.subTest(version=version):
+                store = self.data / 'tasks.sqlite3'
+                store.unlink()
+                with closing(sqlite3.connect(store)) as db:
+                    db.execute(ddl)
+                    db.execute('PRAGMA user_version=' + str(version))
+                    db.execute("INSERT INTO tasks (id, title, notes, priority, status, created_at, updated_at) "
+                               "VALUES (1, 'Legacy task', '', 'normal', 'open', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')")
+                    db.commit()
+                store.chmod(0o600)
+                narrowed = self.run_raw('setup', '--update', '--weekdays', days)
+                self.assertEqual(narrowed.returncode, 0, narrowed.stderr)
+                self.assertEqual(narrowed.stderr, '')
+                listed = self.run_raw('list')
+                self.assertEqual(listed.returncode, 0, listed.stderr)
+                self.assertEqual(json.loads(listed.stdout)[0]['check_in_days'], 'all')

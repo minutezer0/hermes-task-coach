@@ -108,6 +108,7 @@ LEGACY_COLUMNS = ("id", "title", "notes", "priority", "status", "due", "snoozed_
 RECURRENCE_COLUMNS = LEGACY_COLUMNS + ("repeat_interval", "cycle_id", "last_completion")
 TASK_COLUMNS = RECURRENCE_COLUMNS + ("check_in_days",)
 CHECK_IN_DAYS = ("weekdays", "weekends", "all")
+CHECK_IN_DAY_VALUES = {"weekdays": ("mon", "tue", "wed", "thu", "fri"), "weekends": ("sat", "sun")}
 LEGACY_DDL = "CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, notes TEXT NOT NULL, priority TEXT NOT NULL, status TEXT NOT NULL, due TEXT, snoozed_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
 RECURRENCE_DDL = LEGACY_DDL[:-1] + ", repeat_interval TEXT, cycle_id TEXT, last_completion TEXT)"
 TASK_DDL = RECURRENCE_DDL[:-1] + ", check_in_days TEXT NOT NULL DEFAULT 'all')"
@@ -171,6 +172,22 @@ def get_task(db, key):
     if row is None:
         raise ValueError("task not found")
     return task_record(row)
+
+
+def check_in_days_conflict(task, config):
+    """True when narrower task days can never meet the configured days."""
+    days = task.get("check_in_days", "all")
+    return days != "all" and not set(CHECK_IN_DAY_VALUES.get(days, ())) & set(config["weekdays"])
+
+
+def warn_check_in_days(task, config):
+    """Warn without blocking: a task may be staged before the global days widen."""
+    if task.get("status") != "open" or not check_in_days_conflict(task, config):
+        return
+    days = task.get("check_in_days", "all")
+    print("task-coach: warning: task " + str(task["id"]) + " has check-in days '"
+          + str(days) + "' but the configured days are '" + ",".join(config["weekdays"])
+          + "'; it will not be checked in until they overlap", file=sys.stderr)
 
 
 def main(argv=None):
@@ -340,6 +357,7 @@ def run(argv=None):
                 if choice == 'customize':
                     print('Maximum distinct tasks per window (1..10): ', end='', file=sys.stderr, flush=True)
                     changes['max_tasks_per_window'] = int(input().strip())
+        previous_days = config["weekdays"]
         config.update(changes)
         validate_config(config)
         if getattr(args, "interactive", False) and mode == 'discord' and len(config['weekdays']) == 7:
@@ -347,6 +365,7 @@ def run(argv=None):
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Ownership/type/symlink checks above permit setup's dedicated-mode repair.
         with task_store_lock(directory, repair=True):
+            conflicts = []
             fresh = not store.exists()
             if fresh:
                 fd = os.open(store, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -357,6 +376,12 @@ def run(argv=None):
                     db.execute("PRAGMA user_version=2")
                 validate_store(db)
                 db.commit()
+                if config["weekdays"] != previous_days:
+                    db.row_factory = sqlite3.Row
+                    for row in db.execute("SELECT * FROM tasks WHERE status = 'open' ORDER BY id"):
+                        task = dict(row)
+                        if check_in_days_conflict(task, config):
+                            conflicts.append(task)
             directory.chmod(0o700)
             store.chmod(0o600)
             if not existing or changes:
@@ -370,6 +395,8 @@ def run(argv=None):
                     if os.path.exists(temporary):
                         os.unlink(temporary)
             config_path.chmod(0o600)
+            for task in conflicts:
+                warn_check_in_days(task, config)
         result = {"config": config}
     elif args.command == 'migrate':
         with task_store_lock(directory), closing(sqlite3.connect(store.resolve().as_uri() + "?mode=rw", uri=True)) as db:
@@ -433,6 +460,7 @@ def run(argv=None):
                     db.execute("UPDATE tasks SET check_in_days=? WHERE id=?", (args.check_in_days, cursor.lastrowid))
                 db.commit()
                 result = get_task(db, cursor.lastrowid)
+                warn_check_in_days(result, config)
             elif args.command in ("update", "done", "snooze"):
                 task = get_task(db, args.id)
                 changes = {}
@@ -471,6 +499,8 @@ def run(argv=None):
                     db.execute("UPDATE tasks SET " + ", ".join(field + " = ?" for field in changes) + " WHERE id = ?", (*changes.values(), args.id))
                     db.commit()
                 result = get_task(db, args.id)
+                if changes.get("check_in_days"):
+                    warn_check_in_days(result, config)
             elif args.command == "show":
                 result = get_task(db, args.id)
             elif args.command == "search":
