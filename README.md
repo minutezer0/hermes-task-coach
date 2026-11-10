@@ -16,8 +16,8 @@ When your global window includes all seven days, Task Coach asks for the task’
 check-in days when adding it (default: `all`). With any narrower window, it skips
 that question and defaults new tasks to `all`, including granular windows such
 as Mon/Wed/Sat. Explicit task preferences remain saved when you change the global
-window. Overdue dates do not override day preferences; manual task help is always
-available.
+window. Overdue dates do not override day preferences. You can reply and continue
+working on a task on any day, even outside its check-in days or hours.
 
 ```sh
 python3 "<skill_dir>/scripts/task-coach.py" add "Garden" --check-in-days weekends

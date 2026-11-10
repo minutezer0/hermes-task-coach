@@ -29,8 +29,12 @@ def instant(value):
 
 
 def eligible(task, now, zone='UTC'):
-    if not check_in_day_allowed(task, now, zone):
-        return False
+    """Outbound eligibility includes the task's proactive check-in days."""
+    return check_in_day_allowed(task, now, zone) and task_available(task, now, zone)
+
+
+def task_available(task, now, zone='UTC'):
+    """Task lifecycle availability, independent of proactive days and hours."""
     if task.get('repeat_interval'):
         due = task['due']
         due = datetime.combine(datetime.fromisoformat(due).date(), time(), ZoneInfo(zone)) if len(due) == 10 else instant(due)

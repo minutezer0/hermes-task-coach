@@ -316,6 +316,25 @@ class DayClarification(unittest.TestCase):
     setUp = engine_fixtures.EngineTest.setUp
     cli = engine_fixtures.EngineTest.cli
 
+    def test_owner_can_resolve_weekday_task_clarification_on_weekend(self):
+        import test_core_clarification as fixtures
+        from test_core_history_fixtures import history_request
+        self.cli('update', '1', '--check-in-days', 'weekdays')
+        helper = fixtures.ClarificationTest()
+        helper.data, helper.cli = self.data, self.cli
+        runtime, history, drafts, now = helper.fixture()
+        history.insert(0, helper.message('104', now, 'That one'))
+        pending = runtime.engagement(BINDING, helper.pages(history, now), now=now,
+                                     history_plan=history_request(runtime, 'engagement'))['clarifications'][0]
+        later = '2030-01-12T12:00:00Z'
+        history.insert(0, helper.message('105', later, 'The weekday task'))
+        result = runtime.resolve_clarification(binding=BINDING, clarification_id=pending['id'],
+            task_id=1, selection_message_id='105', pages=helper.pages(history, later), now=later,
+            history_plan=history_request(runtime, 'resolve_clarification', selection_message_id='105'))
+        self.assertTrue(result['engaged'])
+        self.assertEqual(result['context']['task_id'], 1)
+        self.assertEqual(runtime.status()['clarifications'][pending['id']]['state'], 'resolved')
+
     def test_legacy_retry_respects_every_candidates_current_days(self):
         import test_core_clarification_retry as retry_fixtures
         from task_coach import clarification
@@ -333,3 +352,79 @@ class DayClarification(unittest.TestCase):
         self.assertFalse(clarification.current_days(runtime, [pending], instant(event['slot'])))
         self.assertFalse(runtime.preflight(now=event['slot'])['wakeAgent'])
         self.assertEqual(runtime.status()['clarifications'][pending['id']], pending)
+
+
+class DayReplies(unittest.TestCase):
+    setUp = engine_fixtures.EngineTest.setUp
+    cli = engine_fixtures.EngineTest.cli
+    runtime = runtime_fixtures.LocalFirstTest.runtime
+    planned = DayRuntime.planned
+
+    def accepted(self, days='weekends', date='2030-01-13'):
+        import subprocess
+        runtime, events = self.planned(days, date)
+        event = events[0]
+        draft = runtime.draft(event['token'], 'Fictional check-in', now=event['slot'])
+        response = subprocess.CompletedProcess([], 0, stdout='{"success":true,"message_id":"100"}', stderr='')
+        with patch('task_coach.driver.subprocess.run', return_value=response):
+            self.assertEqual(runtime.dispatch(event['token'], draft['fence'], hermes='/fictional/hermes', now=event['slot'])['state'], 'accepted')
+        return runtime, event, draft
+
+    def request(self, event, now, intent='engaged'):
+        return dict(binding=BINDING, owner=BINDING['owner'], message_id='200',
+                    event_token=event['token'], task_id=1, cycle_id=None, intent=intent, now=now)
+
+    def test_context_and_replies_work_on_excluded_days_and_outside_global_window(self):
+        for days, date, later, global_days in (('weekends', '2030-01-13', '2030-01-14T08:00:00Z', 'sat,sun'),
+                                              ('weekdays', '2030-01-11', '2030-01-12T20:00:00Z', 'mon,tue,wed,thu,fri')):
+            for intent in ('engaged', 'skip-for-now'):
+                with self.subTest(days=days, intent=intent):
+                    self.data = Path(self.temp.name) / (days + '-' + intent)
+                    self.cli('init')
+                    self.cli('add', 'Fictional task')
+                    self.cli('setup', '--update', '--weekdays', global_days)
+                    runtime, event, _ = self.accepted(days, date)
+                    class ReplyClock(datetime):
+                        @classmethod
+                        def now(cls, tz=None):
+                            return instant(later).astimezone(tz)
+                    with patch('task_coach.driver.datetime', ReplyClock):
+                        self.assertEqual(runtime.context(BINDING)['task_id'], 1)
+                        self.assertEqual(runtime.context(BINDING, reply_to_message_id='100')['task_id'], 1)
+                    request = self.request(event, later, intent)
+                    self.assertTrue(runtime.record_engagement(**request)['engaged'])
+                    self.assertTrue(runtime.record_engagement(**request)['engaged'])
+                    self.assertEqual(runtime.coach.status()['episode']['stopped'], 'owner-engaged')
+                    self.assertEqual(self.cli('show', '1')['status'], 'open')
+                    self.assertFalse(runtime.preflight(now=later)['wakeAgent'])
+
+    def test_requested_history_recovery_accepts_reply_on_excluded_day(self):
+        from test_core_history_fixtures import enable_history, history_request
+        runtime, event, draft = self.accepted()
+        enable_history(runtime)
+        bot = dict(id='100', content=draft['body'], timestamp=event['slot'], author=dict(id='456', bot=True), attachments=[])
+        def pages(messages, now):
+            return [dict(binding=BINDING, channel_id='123', before=None, observed_at=now, result=dict(messages=messages))]
+        runtime.confirm(event['token'], draft['fence'], pages([bot], event['slot']), now=event['slot'],
+                        history_plan=history_request(runtime, 'confirm', event['token'], draft['fence']))
+        later = '2030-01-14T08:00:00Z'
+        owner = dict(id='200', content='Thanks, let’s work on this', timestamp=later, author=dict(id=BINDING['owner'], bot=False), attachments=[])
+        result = runtime.engagement(BINDING, pages([owner, bot], later), now=later,
+                                    history_plan=history_request(runtime, 'engagement'))
+        self.assertTrue(result['engaged'])
+        self.assertEqual(result['context']['task_id'], 1)
+        self.assertEqual(runtime.coach.status()['episode']['stopped'], 'owner-engaged')
+
+    def test_replies_still_reject_completed_task(self):
+        runtime, event, _ = self.accepted()
+        self.cli('done', '1')
+        with self.assertRaisesRegex(ValueError, 'stale or unavailable'):
+            runtime.record_engagement(**self.request(event, '2030-01-14T08:00:00Z'))
+        self.assertFalse(runtime.status().get('engagements'))
+
+    def test_start_work_outside_window_does_not_create_smart_snooze_hold(self):
+        runtime, event, _ = self.accepted()
+        runtime.smart_snooze(enabled=True)
+        with self.assertRaises(ValueError):
+            runtime.record_engagement(**self.request(event, '2030-01-14T08:00:00Z', 'start-work'))
+        self.assertFalse(runtime.status().get('smart_snooze_hold'))

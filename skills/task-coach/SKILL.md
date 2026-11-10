@@ -601,7 +601,10 @@ This controls **both initial check-ins and follow-ups**, including automated
 legacy clarification retries about the task. Days use the configured timezone,
 not the host clock. Always intersect task days with the global allowed days and
 hours. Overdue dates and high priority never override either limit. User-initiated
-task help and edits remain available any day.
+task help, replies and edits remain available any day, including outside the
+global notification window. Use task lifecycle availability for inbound replies;
+the check-in day filter applies only to proactive messages. Preserve existing
+task/cycle/identity checks and Smart Snooze's current-window requirements.
 
 When adding a task for proactive check-ins, first read the saved global window.
 **Only if all seven distinct days are enabled**, ask: “Check-ins on weekdays,

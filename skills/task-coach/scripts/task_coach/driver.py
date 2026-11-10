@@ -724,10 +724,10 @@ class Driver:
             with self.coach._transaction() as engine:
                 sequence = event_episode(engine['episode'], event_token)
                 task = next((t for t in self.coach.tasks() if t['id'] == task_id), None)
-                from .coaching import eligible
+                from .coaching import task_available
                 if (not sequence or sequence['binding'] != binding or sequence['task_id'] != task_id
                         or sequence.get('cycle_id') != cycle_id or not same_cycle(row['task'], task)
-                        or not same_cycle(sequence, task) or not eligible(task, now, self.coach.config()['timezone'])):
+                        or not same_cycle(sequence, task) or not task_available(task, now, self.coach.config()['timezone'])):
                     raise ValueError('stale or unavailable engagement sequence')
                 result = dict(engaged=True, task_id=task_id, event_token=event_token,
                               provenance='agent-mediated-explicit-intent')
@@ -1085,7 +1085,7 @@ class Driver:
 
     def _attribute_engagement(self, messages, route, *, fallback=None, trusted_references=None):
         """Classify the entire batch before engagement; persist only ambiguity holds."""
-        from .coaching import eligible
+        from .coaching import task_available
         with self.transaction() as runtime:
             with self.coach._transaction() as state:
                 episode = state['episode']
@@ -1152,7 +1152,7 @@ class Driver:
                         targets.append(None)
                         continue
                     candidates = [dict(r, task=tasks[r['task']['id']]) for r in rows
-                                  if not clarification.retry_row(r) and r['task']['id'] in tasks and same_cycle(r['task'], tasks[r['task']['id']]) and eligible(tasks[r['task']['id']], instant(message['timestamp']), self.coach.config()['timezone'])
+                                  if not clarification.retry_row(r) and r['task']['id'] in tasks and same_cycle(r['task'], tasks[r['task']['id']]) and task_available(tasks[r['task']['id']], instant(message['timestamp']), self.coach.config()['timezone'])
                                   and int(r['receipt']['message_id']) < int(message['id'])
                                   and instant(r['receipt']['delivered_at']) <= instant(message['timestamp'])]
                     if reference is None:
@@ -1203,7 +1203,7 @@ class Driver:
                               selection_message_id, pages, now=None, history_plan=None):
         """Normal-inbound explicit selection, not manufactured Discord reply metadata."""
         self._require_history()
-        from .coaching import eligible
+        from .coaching import task_available
         now_supplied = now is not None
         validate_binding(binding)
         if not isinstance(selection_message_id, str) or not selection_message_id.isdecimal():
@@ -1236,7 +1236,7 @@ class Driver:
                 with self.coach._transaction() as state:
                     sequence = event_episode(state['episode'], candidate['token'])
                     task = next((t for t in self.coach.tasks() if t['id'] == task_id), None)
-                    if not same_snapshot(candidate['task'], task) or not eligible(task, now, self.coach.config()['timezone']):
+                    if not same_snapshot(candidate['task'], task) or not task_available(task, now, self.coach.config()['timezone']):
                         raise ValueError('candidate is no longer valid; preserve the hold')
                     if sequence and sequence['binding'] == binding:
                         sequence['stopped'] = sequence['stopped'] or 'owner-engaged'
@@ -1266,7 +1266,7 @@ class Driver:
             with self.coach._transaction() as state:
                 sequence = event_episode(state['episode'], candidate['token'])
                 task = next((t for t in self.coach.tasks() if t['id'] == task_id), None)
-                if not same_snapshot(candidate['task'], task) or not eligible(task, now, self.coach.config()['timezone']):
+                if not same_snapshot(candidate['task'], task) or not task_available(task, now, self.coach.config()['timezone']):
                     raise ValueError('candidate is no longer valid; preserve the hold')
                 # Validate before persisting the write-ahead explicit choice.
                 # No engagement until that choice has committed in the outbox.
@@ -1447,11 +1447,11 @@ class Driver:
         if reply_to_message_id is not None:
             rows = [row for row in rows if row['receipt']['message_id'] == reply_to_message_id]
         else:
-            from .coaching import eligible
+            from .coaching import task_available
             tasks = {t['id']: t for t in self.coach.tasks()}
             runtime = self.status()
             rows = [r for r in rows if clarification.current_receipt(runtime, r) and r['task']['id'] in tasks
-                    and same_cycle(r['task'], tasks[r['task']['id']]) and eligible(tasks[r['task']['id']], datetime.now(UTC), self.coach.config()['timezone'])]
+                    and same_cycle(r['task'], tasks[r['task']['id']]) and task_available(tasks[r['task']['id']], datetime.now(UTC), self.coach.config()['timezone'])]
             if len({row['task']['id'] for row in rows}) > 1:
                 return None
         if not rows:
