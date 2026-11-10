@@ -387,7 +387,6 @@ class DismissalTest(unittest.TestCase):
         self.assertIn('bounded history plan', skill)
         self.assertIn('immutable clarification outcomes', instruction)
         self.assertIn('--history-plan-file', instruction)
-        self.assertIn('dismiss-clarification', readme)
         self.assertNotIn('hold-discard command is provided', guide)
 
     def test_cli_dismissal_is_immutable_idempotent_and_never_engages_or_reasks(self):

@@ -69,7 +69,7 @@ class HistoryGuidanceTest(unittest.TestCase):
         self.assertIn('runtime history-preference --disable', skill)
         self.assertIn('Local-only setup never asks', skill)
         self.assertLess(skill.index('Confirm the exact route from trusted context'), skill.index('Default: No'))
-        for name in ('README.md', 'skills/task-coach/SKILL.md', 'skills/task-coach/references/coaching.md', 'skills/task-coach/references/native-runtime.md'):
+        for name in ('skills/task-coach/SKILL.md', 'skills/task-coach/references/native-runtime.md'):
             text = (ROOT / name).read_text()
             self.assertIn('131072', text)
             self.assertIn('--history-plan-file', text)

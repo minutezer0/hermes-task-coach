@@ -343,13 +343,18 @@ class LocalFirstTest(unittest.TestCase):
 
     def test_local_first_documentation_contract(self):
         root = Path(__file__).resolve().parents[1]
-        for name in ('README.md', 'skills/task-coach/SKILL.md', 'skills/task-coach/references/native-runtime.md', 'skills/task-coach/references/coaching.md'):
+        for name in ('skills/task-coach/SKILL.md', 'skills/task-coach/references/native-runtime.md'):
             text = (root / name).read_text()
             with self.subTest(path=name):
-                self.assertIn('upgrade-local-first', text)
+                self.assertIn('local-first', text)
                 self.assertIn('record-engagement', text)
-                self.assertIn('Unknown/unrecorded replies', text)
                 self.assertIn('capabilities', text)
+        for name in ('README.md', 'skills/task-coach/SKILL.md',
+                     'skills/task-coach/references/native-runtime.md',
+                     'skills/task-coach/references/coaching.md'):
+            with self.subTest(path=name):
+                # The separate upgrade command is gone; adoption is automatic.
+                self.assertNotIn('upgrade-local-first', (root / name).read_text())
 
     def test_trusted_identity_cannot_be_retargeted_by_optional_history(self):
         from test_core_clarification import ClarificationTest

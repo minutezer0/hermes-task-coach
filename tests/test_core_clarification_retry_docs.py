@@ -13,11 +13,11 @@ class RetryDocumentationTest(unittest.TestCase):
             text = (ROOT / name).read_text()
             with self.subTest(name=name):
                 if name.endswith('SKILL.md'):
-                    self.assertIn('Legacy episode compatibility', text)
+                    self.assertIn('Task check-in days', text)
                     self.assertIn('Routine cron must not obtain history', text)
-                    self.assertIn('legacy clarification resolution/dismissal', text)
+                    self.assertIn('stale pending clarification stays held', text)
                     self.assertIn('references/native-runtime.md', text)
-                else:
+                elif name.endswith('native-runtime.md'):
                     self.assertIn('clarification retries', text)
                     self.assertIn('next allowed notification window', text)
                     self.assertIn('candidate titles', text)

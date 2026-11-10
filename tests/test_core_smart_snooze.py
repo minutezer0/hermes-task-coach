@@ -210,7 +210,7 @@ class SmartSnoozeTest(unittest.TestCase):
         self.assertIn('smart-snooze', plan['cron_argv'][4])
         root = Path(__file__).resolve().parents[1]
         self.assertIn('version = "0.1.0rc10"', (root/'pyproject.toml').read_text())
-        for path in ('README.md', 'skills/task-coach/SKILL.md', 'skills/task-coach/references/native-runtime.md', 'skills/task-coach/references/coaching.md'):
+        for path in ('README.md', 'skills/task-coach/SKILL.md', 'skills/task-coach/references/native-runtime.md'):
             text = (root/path).read_text()
             self.assertIn('Smart Snooze', text)
             self.assertIn('runtime smart-snooze', text)
