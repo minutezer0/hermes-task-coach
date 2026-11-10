@@ -565,3 +565,19 @@ class DayWarnings(unittest.TestCase):
                 listed = self.run_raw('list')
                 self.assertEqual(listed.returncode, 0, listed.stderr)
                 self.assertEqual(json.loads(listed.stdout)[0]['check_in_days'], 'all')
+
+    def test_reopening_a_conflicted_task_warns_again(self):
+        self.assertEqual(self.run_raw('init').returncode, 0)
+        self.assertEqual(self.run_raw('setup', '--update', '--weekdays', 'mon,tue,wed,thu,fri').stderr, '')
+        self.assertIn('will not be checked in', self.run_raw(
+            'add', 'Fictional weekend chore', '--check-in-days', 'weekends').stderr)
+        self.assertEqual(self.run_raw('add', 'Fictional all-days chore').returncode, 0)
+        for key in ('1', '2'):
+            self.assertEqual(self.run_raw('update', key, '--status', 'done').returncode, 0)
+        reopened = self.run_raw('update', '1', '--status', 'open')
+        self.assertEqual(reopened.returncode, 0, reopened.stderr)
+        self.assertEqual(json.loads(reopened.stdout)['status'], 'open')
+        self.assertIn('will not be checked in until they overlap', reopened.stderr)
+        clean = self.run_raw('update', '2', '--status', 'open')
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        self.assertEqual(clean.stderr, '')

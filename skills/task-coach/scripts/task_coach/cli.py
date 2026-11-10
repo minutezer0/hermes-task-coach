@@ -499,7 +499,7 @@ def run(argv=None):
                     db.execute("UPDATE tasks SET " + ", ".join(field + " = ?" for field in changes) + " WHERE id = ?", (*changes.values(), args.id))
                     db.commit()
                 result = get_task(db, args.id)
-                if changes.get("check_in_days"):
+                if changes.get("check_in_days") or changes.get("status") == "open":
                     warn_check_in_days(result, config)
             elif args.command == "show":
                 result = get_task(db, args.id)

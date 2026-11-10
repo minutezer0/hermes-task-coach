@@ -26,9 +26,10 @@ python3 "<skill_dir>/scripts/task-coach.py" update ID --check-in-days weekdays
 
 As of 0.1.0rc10, a task whose days never overlap the configured days is kept but
 cannot be scheduled. `add`, `update --check-in-days` (when the saved value
-changes) and any `setup --update --weekdays` change print a non-blocking warning
-on stderr, so you can stage a task before widening the global window. `list` and
-`show` remain authoritative for what was saved.
+changes), reopening through `update --status open`, and any
+`setup --update --weekdays` change print a non-blocking warning on stderr, so you
+can stage a task before widening the global window. `list` and `show` remain
+authoritative for what was saved.
 
 Older tasks read as `all` without changing storage. To use non-`all` preferences
 on an existing store, stop older writers and explicitly run `migrate` with user
