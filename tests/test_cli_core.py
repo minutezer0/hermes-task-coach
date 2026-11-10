@@ -81,7 +81,7 @@ class CLITest(unittest.TestCase):
         self.assertEqual(self.run_cli("show", "1"), task)
 
     def test_setup_flags_and_rerun_preservation(self):
-        config = self.run_cli("setup", "--timezone", "Europe/Paris", "--weekdays", "mon,wed,fri", "--notification-start", "09:00", "--notification-end", "17:00", "--max-unanswered-followups", "3", "--min-followup-interval", "30", "--max-followup-interval", "60", "--destination", "opaque-target")["config"]
+        config = self.run_cli("setup", "--timezone", "Europe/Paris", "--weekdays", "mon,wed,fri", "--notification-start", "09:00", "--notification-end", "17:00", "--max-unanswered-followups", "3", "--min-followup-interval", "30", "--max-followup-interval", "60")["config"]
         self.assertEqual(config["timezone"], "Europe/Paris")
         self.assertEqual(config["weekdays"], ["mon", "wed", "fri"])
         self.assertEqual(config["max_unanswered_followups"], 3)
@@ -94,11 +94,10 @@ class CLITest(unittest.TestCase):
         self.assertEqual(self.run_cli("setup")["config"], config)
         updated = self.run_cli("setup", "--update", "--timezone", "UTC")["config"]
         self.assertEqual(updated["timezone"], "UTC")
-        self.assertEqual(updated["destination"], "opaque-target")
         self.assertEqual(self.run_cli("list"), [task])
 
     def test_setup_validation_precedes_writes(self):
-        invalid = [("--timezone", "Invalid/Zone"), ("--weekdays", "mon,bogus"), ("--weekdays", ""), ("--weekdays", "mon,mon"), ("--notification-start", "25:00"), ("--notification-start", "18:00"), ("--notification-end", "09:00"), ("--max-unanswered-followups", "-1"), ("--max-unanswered-followups", "21"), ("--min-followup-interval", "0"), ("--min-followup-interval", "121"), ("--max-followup-interval", "1441"), ("--notification-end", "09:30", "--max-unanswered-followups", "3"), ("--destination", " ")]
+        invalid = [("--timezone", "Invalid/Zone"), ("--weekdays", "mon,bogus"), ("--weekdays", ""), ("--weekdays", "mon,mon"), ("--notification-start", "25:00"), ("--notification-start", "18:00"), ("--notification-end", "09:00"), ("--max-unanswered-followups", "-1"), ("--max-unanswered-followups", "21"), ("--min-followup-interval", "0"), ("--min-followup-interval", "121"), ("--max-followup-interval", "1441"), ("--notification-end", "09:30", "--max-unanswered-followups", "3")]
         for flags in invalid:
             with self.subTest(flags=flags):
                 self.run_cli("setup", *flags, ok=False)
@@ -108,24 +107,32 @@ class CLITest(unittest.TestCase):
         self.run_cli("setup", "--update", "--timezone", "Invalid/Zone", ok=False)
         self.assertEqual((self.data / "config.json").read_bytes(), before)
 
+    def test_stale_config_names_unexpected_fields(self):
+        self.run_cli('setup')
+        path = self.data / 'config.json'
+        config = json.loads(path.read_text())
+        config['destination'] = None
+        path.write_text(json.dumps(config))
+        error = self.run_cli('list', ok=False)
+        self.assertIn('invalid configuration fields', error.stderr)
+        self.assertIn('unexpected destination', error.stderr)
+
     def test_setup_help_distinguishes_preferences_from_existing_connection(self):
         result = subprocess.run([sys.executable, '-m', 'task_coach', 'setup', '--help'], env=self.env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0)
         self.assertIn('already-configured Discord', result.stdout)
         self.assertNotIn('optional and opaque', result.stdout)
 
-    def test_terminal_local_mode_skips_notification_and_destination_questions(self):
+    def test_terminal_local_mode_skips_notification_questions(self):
         result = subprocess.run([sys.executable, '-m', 'task_coach', '--data-dir', str(self.data), 'setup', '--interactive'], env=self.env, text=True, input='local\nEurope/Paris\n', capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Local tasks or Discord check-ins', result.stderr)
         self.assertIn('Your timezone', result.stderr)
         self.assertNotIn('notification_start', result.stderr)
-        self.assertNotIn('destination [', result.stderr)
         self.assertNotIn('IANA', result.stderr)
         config = json.loads(result.stdout)['config']
         self.assertEqual(config['timezone'], 'Europe/Paris')
         self.assertFalse(config['automation_enabled'])
-        self.assertIsNone(config['destination'])
 
     def test_interactive_setup_and_cancel(self):
         answers = "discord\nEurope/Paris\nmon,tue\n10:00\n16:00\n1\n20\n40\nkeep\n"

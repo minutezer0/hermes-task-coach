@@ -17,15 +17,20 @@ DEFAULT_CONFIG = {
     "timezone": "UTC", "weekdays": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
     "notification_start": "09:00", "notification_end": "17:00",
     "max_tasks_per_window": 2, "max_unanswered_followups": 2, "min_followup_interval": 30,
-    "max_followup_interval": 120, "destination": None, "automation_enabled": False,
+    "max_followup_interval": 120, "automation_enabled": False,
 }
 
 
 def validate_config(config):
-    # Missing only this new preference is the historical format, never new defaults.
-    if isinstance(config, dict) and set(config) == set(DEFAULT_CONFIG) - {"max_tasks_per_window"}:
-        config = dict(config, max_tasks_per_window=1)
     if not isinstance(config, dict) or set(config) != set(DEFAULT_CONFIG):
+        if isinstance(config, dict):
+            unexpected = sorted(set(config) - set(DEFAULT_CONFIG))
+            missing = sorted(set(DEFAULT_CONFIG) - set(config))
+            if unexpected or missing:
+                detail = '; '.join(filter(None, (
+                    'unexpected ' + ', '.join(unexpected) if unexpected else '',
+                    'missing ' + ', '.join(missing) if missing else '')))
+                raise ValueError('invalid configuration fields: ' + detail)
         raise ValueError("invalid configuration fields")
     try:
         if not isinstance(config["timezone"], str):
@@ -53,8 +58,6 @@ def validate_config(config):
         raise ValueError("followups must be 0..20 and intervals 1..1440 minutes with min <= max")
     if count * low > minutes[1] - minutes[0]:
         raise ValueError("notification window cannot fit followups at the minimum interval")
-    if config["destination"] is not None and (not isinstance(config["destination"], str) or not config["destination"].strip()):
-        raise ValueError("destination must be a non-empty opaque string")
     if config["automation_enabled"] is not False:
         raise ValueError("automation is not available; automation_enabled must be false")
     return config
@@ -102,67 +105,55 @@ def title_value(value):
     return value
 
 
-LEGACY_COLUMNS = ("id", "title", "notes", "priority", "status", "due", "snoozed_until", "created_at", "updated_at")
-
-
-RECURRENCE_COLUMNS = LEGACY_COLUMNS + ("repeat_interval", "cycle_id", "last_completion")
-TASK_COLUMNS = RECURRENCE_COLUMNS + ("check_in_days",)
+TASK_COLUMNS = ("id", "title", "notes", "priority", "status", "due", "snoozed_until", "created_at", "updated_at", "repeat_interval", "cycle_id", "last_completion", "check_in_days")
 CHECK_IN_DAYS = ("weekdays", "weekends", "all")
 CHECK_IN_DAY_VALUES = {"weekdays": ("mon", "tue", "wed", "thu", "fri"), "weekends": ("sat", "sun")}
-LEGACY_DDL = "CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, notes TEXT NOT NULL, priority TEXT NOT NULL, status TEXT NOT NULL, due TEXT, snoozed_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
-RECURRENCE_DDL = LEGACY_DDL[:-1] + ", repeat_interval TEXT, cycle_id TEXT, last_completion TEXT)"
-TASK_DDL = RECURRENCE_DDL[:-1] + ", check_in_days TEXT NOT NULL DEFAULT 'all')"
+TASK_DDL = "CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, notes TEXT NOT NULL, priority TEXT NOT NULL, status TEXT NOT NULL, due TEXT, snoozed_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, repeat_interval TEXT, cycle_id TEXT, last_completion TEXT, check_in_days TEXT NOT NULL DEFAULT 'all')"
 
 
 def task_record(row):
-    """Older schemas mean all globally allowed days, without writing on reads."""
-    task = dict(row)
-    task.setdefault("check_in_days", "all")
-    return task
+    return dict(row)
 
 
 def validate_store(db):
     version = db.execute("PRAGMA user_version").fetchone()[0]
     schema = [tuple(row) for row in db.execute("SELECT type,name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'")]
-    ddl = {0: LEGACY_DDL, 1: RECURRENCE_DDL, 2: TASK_DDL}.get(version)
-    if ddl is None or len(schema) != 1 or schema[0][:2] != ('table', 'tasks') or ''.join(schema[0][2].split()).lower() != ''.join(ddl.split()).lower():
+    if version != 2 or len(schema) != 1 or schema[0][:2] != ('table', 'tasks') or ''.join(schema[0][2].split()).lower() != ''.join(TASK_DDL.split()).lower():
         raise ValueError("incompatible task store schema or version")
     columns = tuple(tuple(row)[1:] for row in db.execute("PRAGMA table_xinfo(tasks)"))
     expected = tuple(
         (name, "INTEGER" if name == "id" else "TEXT",
          int(name not in ("id", "due", "snoozed_until", "repeat_interval", "cycle_id", "last_completion")), "'all'" if name == "check_in_days" else None, int(name == "id"), 0)
-        for name in {0: LEGACY_COLUMNS, 1: RECURRENCE_COLUMNS, 2: TASK_COLUMNS}[version]
+        for name in TASK_COLUMNS
     )
     # A separate primary-key index means id is not the INTEGER rowid alias
     # (for example, INTEGER PRIMARY KEY DESC or a WITHOUT ROWID table).
     separate_pk = any(row[3] == "pk" for row in db.execute("PRAGMA index_list(tasks)"))
     if columns != expected or separate_pk:
         raise ValueError("incompatible task store schema")
-    names = {0: LEGACY_COLUMNS, 1: RECURRENCE_COLUMNS, 2: TASK_COLUMNS}[version]
     from .recurrence import interval
     try:
         for row in db.execute("SELECT * FROM tasks"):
-            task = dict(zip(names, row))
+            task = dict(zip(TASK_COLUMNS, row))
             if type(task['id']) is not int or task['id'] <= 0 or not isinstance(task['title'], str) or not task['title'].strip() or not isinstance(task['notes'], str) or task['priority'] not in ('low', 'normal', 'high') or task['status'] not in ('open', 'done', 'cancelled'):
                 raise ValueError('invalid task data')
             for field in ('due', 'snoozed_until', 'created_at', 'updated_at'):
                 value = task[field]
                 if value is not None:
                     due_value(value, aware_only=field != 'due')
-            if version == 2 and task['check_in_days'] not in CHECK_IN_DAYS:
+            if task['check_in_days'] not in CHECK_IN_DAYS:
                 raise ValueError('invalid check-in days')
-            if version >= 1:
-                cycle = task['cycle_id']
-                if cycle is not None and (not isinstance(cycle, str) or not re.fullmatch('[0-9a-f]{32}', cycle)):
-                    raise ValueError('invalid cycle')
-                if task['repeat_interval'] is not None:
-                    if interval(task['repeat_interval']) != task['repeat_interval'] or cycle is None or task['due'] is None or task['status'] == 'done':
-                        raise ValueError('invalid recurrence')
-                if task['last_completion'] is not None:
-                    record = json.loads(task['last_completion'])
-                    if set(record) != {'cycle', 'identity', 'completed_at'} or not re.fullmatch('[0-9a-f]{32}', record['cycle']) or not isinstance(record['identity'], str) or not record['identity'].strip() or cycle is None or record['cycle'] == cycle:
-                        raise ValueError('invalid completion')
-                    due_value(record['completed_at'])
+            cycle = task['cycle_id']
+            if cycle is not None and (not isinstance(cycle, str) or not re.fullmatch('[0-9a-f]{32}', cycle)):
+                raise ValueError('invalid cycle')
+            if task['repeat_interval'] is not None:
+                if interval(task['repeat_interval']) != task['repeat_interval'] or cycle is None or task['due'] is None or task['status'] == 'done':
+                    raise ValueError('invalid recurrence')
+            if task['last_completion'] is not None:
+                record = json.loads(task['last_completion'])
+                if set(record) != {'cycle', 'identity', 'completed_at'} or not re.fullmatch('[0-9a-f]{32}', record['cycle']) or not isinstance(record['identity'], str) or not record['identity'].strip() or cycle is None or record['cycle'] == cycle:
+                    raise ValueError('invalid completion')
+                due_value(record['completed_at'])
     except (TypeError, KeyError, argparse.ArgumentTypeError, OverflowError):
         raise ValueError('invalid task data') from None
 
@@ -217,7 +208,6 @@ def run(argv=None):
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("init")
-    commands.add_parser("migrate", help="Explicitly migrate a validated legacy task store; reads never migrate")
     setup = commands.add_parser(
         "setup",
         description="Configure local task coaching. No jobs or delivery are enabled.",
@@ -226,12 +216,12 @@ def run(argv=None):
         "2 unanswered followups per task; intervals 30–120 minutes. Intervals must be 1..1440 "
         "minutes and followups 0..20, fitting within a same-day window at the minimum "
         "interval. Choose local tasks or preferences for already-configured Discord "
-        "check-ins; setup never connects messaging or enables delivery. "
-        "The legacy --destination preference does not configure a route; automation remains disabled.",
+        "check-ins; setup never connects messaging or enables delivery, "
+        "and automation remains disabled.",
     )
     setup.add_argument("--interactive", action="store_true", help="prompt for settings; blank keeps the displayed default")
     setup.add_argument("--update", action="store_true", help="explicitly update an existing configuration")
-    for field in ("timezone", "weekdays", "notification-start", "notification-end", "destination"):
+    for field in ("timezone", "weekdays", "notification-start", "notification-end"):
         setup.add_argument("--" + field)
     for field in ("max-tasks-per-window", "max-unanswered-followups", "min-followup-interval", "max-followup-interval"):
         setup.add_argument("--" + field, type=int)
@@ -398,24 +388,6 @@ def run(argv=None):
             for task in conflicts:
                 warn_check_in_days(task, config)
         result = {"config": config}
-    elif args.command == 'migrate':
-        with task_store_lock(directory), closing(sqlite3.connect(store.resolve().as_uri() + "?mode=rw", uri=True)) as db:
-            validate_store(db)
-            version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version < 2:
-                db.execute('BEGIN IMMEDIATE')
-                try:
-                    if version == 0:
-                        for field in ('repeat_interval', 'cycle_id', 'last_completion'):
-                            db.execute('ALTER TABLE tasks ADD COLUMN ' + field + ' TEXT')
-                    db.execute("ALTER TABLE tasks ADD COLUMN check_in_days TEXT NOT NULL DEFAULT 'all'")
-                    db.execute('PRAGMA user_version=2')
-                    validate_store(db)
-                    db.commit()
-                except BaseException:
-                    db.rollback()
-                    raise
-            result = dict(version=2)
     elif args.command == 'runtime':
         from .driver import run_cli
         result = run_cli(directory, args)
@@ -447,11 +419,6 @@ def run(argv=None):
                 repeat = interval(args.repeat) if args.repeat else None
                 if repeat and not args.due:
                     raise ValueError("recurrence requires an explicit initial due date")
-                version = db.execute("PRAGMA user_version").fetchone()[0]
-                if repeat and version < 1:
-                    raise ValueError("run migrate before adding recurrence")
-                if args.check_in_days != 'all' and version < 2:
-                    raise ValueError("run migrate before setting task check-in days")
                 now = datetime.now(timezone.utc).isoformat()
                 cursor = db.execute("INSERT INTO tasks (title, notes, priority, status, due, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (args.title, args.notes, args.priority, "open", args.due, now, now))
                 if repeat:
@@ -469,17 +436,11 @@ def run(argv=None):
                 if args.command == "update":
                     changes = {field: getattr(args, field) for field in ("title", "notes", "due", "priority", "status") if getattr(args, field) is not None}
                     if args.check_in_days is not None:
-                        if db.execute("PRAGMA user_version").fetchone()[0] < 2:
-                            if args.check_in_days != 'all':
-                                raise ValueError("run migrate before setting task check-in days")
-                        else:
-                            changes['check_in_days'] = args.check_in_days
+                        changes['check_in_days'] = args.check_in_days
                     if task.get("repeat_interval") and args.status in ("open", "done") and args.status != task["status"]:
                         raise ValueError("use guarded done for recurring completion; status cannot bypass it")
                     if args.repeat or args.remove_repeat:
                         from .recurrence import interval
-                        if db.execute("PRAGMA user_version").fetchone()[0] < 1:
-                            raise ValueError("run migrate before editing recurrence")
                         repeat = interval(args.repeat) if args.repeat else None
                         if repeat and (changes.get("status", task["status"]) != "open" or not changes.get("due", task["due"])):
                             raise ValueError("recurrence requires an open task with an explicit due date")

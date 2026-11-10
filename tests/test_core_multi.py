@@ -25,18 +25,6 @@ class MultipleTasksTest(unittest.TestCase):
         updated = self.cli('setup', '--update', '--timezone', 'Europe/Paris')['config']
         self.assertEqual(updated['max_tasks_per_window'], 3)
 
-    def test_legacy_config_stays_single_until_explicit_update(self):
-        path = self.data / 'config.json'
-        legacy = self.cli('setup')['config']
-        legacy.pop('max_tasks_per_window')
-        path.write_text(json.dumps(legacy))
-        before = path.read_bytes(), path.stat().st_mtime_ns
-        self.assertEqual(self.cli('setup')['config']['max_tasks_per_window'], 1)
-        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
-        config = self.cli('setup', '--update', '--timezone', 'Europe/Paris')['config']
-        self.assertEqual(config['max_tasks_per_window'], 1)
-        self.assertEqual(self.cli('setup', '--update', '--max-tasks-per-window', '4')['config']['max_tasks_per_window'], 4)
-
     def test_terminal_checkins_show_maximum_before_keep_or_customize(self):
         flags = ('--timezone', 'UTC', '--weekdays', 'mon', '--notification-start', '09:00', '--notification-end', '17:00', '--max-unanswered-followups', '2', '--min-followup-interval', '30', '--max-followup-interval', '120')
         import subprocess
@@ -198,25 +186,3 @@ class MultipleTasksTest(unittest.TestCase):
                 later = episode['next_tasks'][0]['events'][0]['slot']
                 self.assertFalse(engine.prepare(binding=BINDING, now=later)['wakeAgent'])
 
-    def test_legacy_version_one_receipts_and_config_snapshot_remain_usable(self):
-        self.cli('setup', '--update', '--max-tasks-per-window', '1', '--min-followup-interval', '1', '--max-followup-interval', '1')
-        engine = self.engine()
-        engine.prepare(binding=BINDING, now='2030-01-07T08:00:00Z')
-        events = engine.status()['episode']['events']
-        engine.tick(binding=BINDING, now=events[0]['slot'])
-        receipt = self.receipt(events[0])
-        engine.acknowledge(receipt, now=events[0]['slot'])
-        # Exact historical disk representation, including an in-flight episode.
-        with engine.transaction() as state:
-            state['episode']['config'].pop('max_tasks_per_window')
-        path = self.data / 'config.json'
-        config = json.loads(path.read_text())
-        config.pop('max_tasks_per_window')
-        path.write_text(json.dumps(config))
-        state = engine.status()
-        self.assertEqual(state['version'], 1)
-        self.assertEqual(state['episode']['events'][0]['receipt'], receipt)
-        from task_coach.coaching import instant
-        result = self.engine(99).tick(binding=BINDING, now=events[1]['slot'], evidence=self.evidence(events[0], instant(events[1]['slot'])))
-        self.assertTrue(result['wakeAgent'], result)
-        self.assertNotIn('max_tasks_per_window', engine.status()['episode']['config'])

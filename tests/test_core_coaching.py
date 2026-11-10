@@ -136,7 +136,7 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(engine.status()['episode']['events'], events)
         (self.data / 'coach.sqlite3').unlink()  # synthetic independent case
         engine, events = self.prepare()
-        self.cli('setup', '--update', '--destination', 'different-route')
+        self.cli('setup', '--update', '--max-tasks-per-window', '3')
         self.assertFalse(engine.tick(now=datetime.fromisoformat(events[0]['slot']), binding=BINDING)['wakeAgent'])
         self.assertEqual(engine.status()['episode']['stopped'], 'configuration-changed')
 
