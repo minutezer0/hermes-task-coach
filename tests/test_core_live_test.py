@@ -38,6 +38,7 @@ class LiveTest(unittest.TestCase):
     def test_refusals_preserve_existing_plans_pause_and_audit(self):
         import copy
         runtime = self.configured()
+        self.cli('setup', '--update', '--weekdays', 'mon,tue,wed,thu,fri')
         runtime.coach.status()
         base = runtime.coach.status()
         with self.assertRaisesRegex(ValueError, 'confirmation'):

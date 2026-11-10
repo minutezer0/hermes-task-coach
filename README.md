@@ -5,6 +5,32 @@ choose a small next step, and work through blockers in an ordinary conversation.
 No messaging account is needed. Optional automatic check-ins currently support
 **already-configured Discord connections only**.
 
+## Task check-in days (0.1.0rc9)
+
+New setups default to every day, 09:00–17:00; existing saved days stay unchanged.
+Each task supports **weekdays / weekends / all** for both initial check-ins and
+follow-ups. Task days always stay within your global allowed days and hours,
+using your configured timezone. `all` means all days your global window permits.
+
+When your global window includes all seven days, Task Coach asks for the task’s
+check-in days when adding it (default: `all`). With any narrower window, it skips
+that question and defaults new tasks to `all`, including granular windows such
+as Mon/Wed/Sat. Explicit task preferences remain saved when you change the global
+window. Overdue dates do not override day preferences. You can reply and continue
+working on a task on any day, even outside its check-in days or hours.
+
+```sh
+python3 "<skill_dir>/scripts/task-coach.py" add "Garden" --check-in-days weekends
+python3 "<skill_dir>/scripts/task-coach.py" update ID --check-in-days weekdays
+```
+
+Older tasks read as `all` without changing storage. To use non-`all` preferences
+on an existing store, stop older writers and explicitly run `migrate` with user
+approval. Exact task schemas 0 and 1 upgrade transactionally to version 2,
+preserving task IDs, recurrence cycles, saved settings and notification audits.
+Fresh stores use version 2. Do not run older helpers after migration. No live
+installation, schedule refresh or activation happens just by updating the source.
+
 ## Guided setup (0.1.0rc8)
 
 The setup wizard now guides Proactive Mode through preferences, one task, schedule
@@ -16,7 +42,7 @@ saved limits are preserved.
 
 Smart Snooze is a **hold-only notification preference**, default OFF on fresh and
 all known older runtimes missing the field. With it ON, a genuine explicit
-“start working now” reply to a current accepted/delivered check-in or follow-up
+“start working now” reply to an accepted/delivered check-in or follow-up
 records `start-work` and holds **all** Task Coach automated notifications for the
 remaining current configured local notification window, including other tasks and
 legacy clarification retries. It does not change task status, completion, snooze,
@@ -41,7 +67,7 @@ re-interviewing. Persist only the explicit choice and read back. Never ask this
 question for local-only task setup. This choice alone never activates cron.
 
 Record clear engagement **BEFORE substantive assistance, memory recall or
-delegation**, using `runtime record-engagement --binding JSON --owner OWNER
+delegation**, when an applicable accepted check-in exists, using `runtime record-engagement --binding JSON --owner OWNER
 --message-id INBOUND_ID --event-token EVENT --task-id TASK [--cycle-id CYCLE]
 --intent start-work` only for genuine explicit agreement to begin working now.
 Use `engaged` for general engagement and `skip-for-now` for a skip. Bind the genuine
@@ -243,10 +269,12 @@ Existing unversioned task stores are readable without migration. Before enabling
 recurrence, obtain approval, stop old-version writers, and explicitly run
 `python3 "<skill_dir>/scripts/task-coach.py" migrate` in the approved data scope.
 The exact repository legacy nine-column task schema (`user_version=0`) upgrades
-transactionally to version 1 by appending nullable interval/cycle/last-request
-fields. IDs, contents, configuration and separate engine/runtime/receipt/audit
-stores are preserved. Reads never migrate; malformed data, incompatible DDL or
-unknown versions refuse without resetting state. Fresh stores use version 1.
+transactionally to version 2 by appending nullable interval/cycle/last-request
+fields and `check_in_days` with default `all`. IDs, contents, configuration and
+separate engine/runtime/receipt/audit stores are preserved. Reads never migrate;
+malformed data, incompatible DDL or
+unknown versions refuse without resetting state. Exact version 1 stores can also
+upgrade, appending `check_in_days` with default `all`. Fresh stores use version 2.
 Use only the new helper after migration. See the
 [skill's recurrence protocol](skills/task-coach/SKILL.md#completion-based-recurring-tasks)
 for full retry, snapshot and stale clarification behavior.
@@ -288,7 +316,7 @@ Yes. You can skip the test and activate after reviewing the unverified
 delivery limits. If a step is blocked, Hermes explains what is needed to continue.
 
 For Discord, Hermes confirms your existing destination and asks only for missing
-check-in preferences, using everyday language. It offers Monday–Friday, 9am–5pm
+check-in preferences, using everyday language. It offers every day, 9am–5pm
 in your confirmed timezone or suggests a timezone from trusted user context for
 confirmation. If none is available, it asks; the server timezone is not assumed
 to be yours. Only after choosing Discord
@@ -475,7 +503,7 @@ repeat setup preserves tasks and configuration. Use `setup --update` for deliber
 changes. `setup --update --interactive` displays saved values; blank keeps them.
 Legacy `--destination` stores a preference only and does not configure delivery.
 
-Default preferences are UTC, Monday–Friday, 09:00–17:00, up to 2 distinct tasks,
+Default preferences are UTC, every day, 09:00–17:00, up to 2 distinct tasks,
 up to two unanswered follow-ups per task, and 30–120 minute follow-up intervals.
 Set `--max-tasks-per-window` to an integer from 1 through 10. Saved configurations
 from before this setting retain a maximum of 1 until you explicitly change it
@@ -492,6 +520,7 @@ With `HERMES_HOME`, data lives in its `task-coach` subdirectory. Otherwise it us
 - Priority: `low`, `normal` or `high`; status: `open`, `done` or `cancelled`.
 - Due: `2031-04-05` or an aware timestamp such as `2031-04-05T12:00:00+02:00`.
 - Snooze: an aware timestamp; it does not change the due date.
+- Check-in days: `weekdays`, `weekends` or `all`; applies to initial check-ins and follow-ups within the global window.
 - Notes: plain text; checkbox lines can be maintained manually.
 - `export` writes all tasks as JSON; `done` is idempotent and preserves history.
 - Recurring tasks, native subtasks and external task providers are not implemented.
@@ -526,3 +555,12 @@ they are not live Discord verification.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Replies use conversation and saved task context independently of the notification
+schedule, including after daily rollover. Clear task references can be used
+directly; ambiguous references need a natural clarification. Recording engagement
+can use a retained accepted receipt for the current task/cycle. A start-work reply
+outside a window is accepted without a hold; inside an allowed window, Smart
+Snooze ON can hold the remainder of that current window. Replays never create
+future holds. An unavailable engagement record does not prevent ordinary task
+help or authorize guessing an event, completing a task or changing a newer cycle.

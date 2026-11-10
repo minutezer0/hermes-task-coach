@@ -1,7 +1,7 @@
 ---
 name: task-coach
 description: "Use when managing tasks or coaching follow-through. Guide local task setup and optional native Hermes check-ins."
-version: 0.1.0-rc.8
+version: 0.1.0-rc.9
 license: MIT
 platforms: [linux]
 metadata:
@@ -22,7 +22,7 @@ route. Synthetic tests and saved settings are not live platform verification.
 
 Smart Snooze is a **hold-only notification preference**, default OFF on fresh and
 all known older runtimes missing the field. With it ON, a genuine explicit
-“start working now” reply to a current accepted/delivered check-in or follow-up
+“start working now” reply to an accepted/delivered check-in or follow-up
 records `start-work` and holds **all** Task Coach automated notifications for the
 remaining current configured local notification window, including other tasks and
 legacy clarification retries. It does not change task status, completion, snooze,
@@ -47,7 +47,7 @@ re-interviewing. Persist only the explicit choice and read back. Never ask this
 question for local-only task setup. This choice alone never activates cron.
 
 Record clear engagement **BEFORE substantive assistance, memory recall or
-delegation**, using `runtime record-engagement --binding JSON --owner OWNER
+delegation**, when an applicable accepted check-in exists, using `runtime record-engagement --binding JSON --owner OWNER
 --message-id INBOUND_ID --event-token EVENT --task-id TASK [--cycle-id CYCLE]
 --intent start-work` only for genuine explicit agreement to begin working now.
 Use `engaged` for general engagement and `skip-for-now` for a skip. Bind the genuine
@@ -347,9 +347,13 @@ store exists (check only the approved active data scope):
    confirmed user timezone.
    Present saved days/hours when resuming; for a fresh setup suggest the defaults
    with the confirmed or suggested user timezone: “Use the default check-in hours:
-   Monday–Friday, 9am–5pm [timezone]?” Explain the source of a suggested timezone
+   Every day, 9am–5pm [timezone]?” Explain the source of a suggested timezone
    and that days, hours or timezone can be changed. If the user changes only the
    hours, retain the confirmed days and timezone. Ask only for missing information.
+   If all seven days are enabled, explain: “When we add a task, I’ll ask whether
+   you want check-ins on weekdays, weekends, or all. That includes follow-ups.”
+   If fewer days are enabled, omit that explanation and the task-add day question;
+   new tasks default to `all`, meaning all globally allowed days.
    Once the window is known, ask a separate maximum-tasks question first:
 
    “How many different tasks would you like me to check in about during that
@@ -401,9 +405,9 @@ saved choices and approvals for their exact scope.
    optional—you can leave this task without one.” Accept “no date” without further
    date questions or inventing a deadline. If a date was already supplied, reuse it;
    resolve relative dates in the confirmed timezone and clarify ambiguity. Recurring
-   tasks follow the required initial-due-date protocol below instead. Then add and
-   verify the task and any chosen due date before any preflight. Never create a
-   sample task.
+   tasks follow the required initial-due-date protocol below instead. Apply the
+   task check-in days question below before adding. Then add and verify the task
+   and any chosen due date before any preflight. Never create a sample task.
 3. Inspect existing installation artifacts and present the installation approval
    described below. After approval, install or reuse the wrapper, paused schedule
    and scoped reply instruction, then verify all three by readback. In this
@@ -423,7 +427,7 @@ saved choices and approvals for their exact scope.
    destination, days/window/timezone, maximum distinct tasks, unanswered follow-up
    limit and randomized spacing, what a reply stops (never task completion),
    Smart Snooze choice, optional history choice/scope, and the first task with its
-   due date or “no due date.”
+   due date or “no due date,” plus its check-in days.
    State whether the test was skipped or what it established, including remaining
    verification limits. Do not re-ask each preference; invite corrections.
    Then explain: “Saying Yes turns on regular check-ins with these settings.”
@@ -456,7 +460,7 @@ Do not wait for agent-terminal stdin. These generic notification flags are only
 for users who actually chose check-ins (use confirmed values):
 
 ```sh
-python3 "<skill_dir>/scripts/task-coach.py" setup --timezone UTC --weekdays mon,tue,wed,thu,fri --notification-start 09:00 --notification-end 17:00 --max-tasks-per-window 2 --max-unanswered-followups 2 --min-followup-interval 30 --max-followup-interval 120
+python3 "<skill_dir>/scripts/task-coach.py" setup --timezone UTC --weekdays mon,tue,wed,thu,fri,sat,sun --notification-start 09:00 --notification-end 17:00 --max-tasks-per-window 2 --max-unanswered-followups 2 --min-followup-interval 30 --max-followup-interval 120
 python3 "<skill_dir>/scripts/task-coach.py" setup
 python3 "<skill_dir>/scripts/task-coach.py" list
 ```
@@ -577,9 +581,9 @@ retry an uncertain send.
 
 All commands return JSON. Use returned task IDs rather than guessed counters:
 
-- `add TITLE [--notes TEXT] [--priority low|normal|high] [--due DATE_OR_TIMESTAMP]`
+- `add TITLE [--notes TEXT] [--priority low|normal|high] [--due DATE_OR_TIMESTAMP] [--check-in-days weekdays|weekends|all]`
 - `list`, `export`, `search QUERY`, `show ID`
-- `update ID [--title TEXT] [--notes TEXT] [--priority ...] [--status open|done|cancelled] [--due ...]`
+- `update ID [--title TEXT] [--notes TEXT] [--priority ...] [--status open|done|cancelled] [--due ...] [--check-in-days weekdays|weekends|all]`
 - `done ID`, `snooze ID AWARE_TIMESTAMP`
 
 Read the task before and after changes. Preserve unrelated fields. Date-only
@@ -589,6 +593,84 @@ data: use safe argument arrays or correct shell quoting. Do not infer completion
 deadlines or snoozes from conversation. Checklist lines may live in notes; checking
 one entry is not permission to complete the task. Occurrence generation, external providers and native subtasks are not implemented.
 Completion-based recurrence reuses the same task, as described below.
+
+## Replies and task context
+
+Use the same conversational reply workflow on any day, outside notification
+hours, or in a later notification window. Notification schedules govern only
+proactive messages; they do not grant permission to answer the user.
+
+Use the conversation, trusted reply references and saved task/check-in records
+to identify the task. `runtime context --binding JSON` can suggest an unambiguous
+accepted check-in; an actual reply target can be passed with
+`--reply-to-message-id TARGET`. If it returns null, use `list`, `search` and
+`show` in the approved data scope to find the task named in the conversation.
+Clear context needs no extra confirmation. If the task is ambiguous, ask which
+one; never guess the newest check-in. Do not scan Discord history automatically.
+
+For clear engagement with an accepted check-in in the task’s current recurrence
+cycle, record the genuine owner/message/task/event/cycle using
+`runtime record-engagement`, even after the source daily plan has rolled over.
+A retained accepted event is sufficient; the source event need not be in today’s
+plan. Old replies never stop an unrelated newer task sequence or advance a
+recurring cycle. A start-work reply is accepted outside notification hours without
+creating a Smart Snooze hold. During an allowed window, Smart Snooze ON can hold
+notifications through that current window’s end, including for a reply to an
+older check-in. Retries never renew a hold or create one later.
+
+If there is no applicable accepted check-in, continue ordinary task help without
+inventing an event or claiming notifications were suppressed. Completed, snoozed
+or not-yet-due tasks can still be discussed; a refused engagement record does not
+prohibit conversation. Keep task edits and completion tied to explicit user
+intent and the current task/cycle. Never reinterpret an old completion request
+as a request to complete a new recurring cycle.
+
+## Task check-in days (0.1.0rc9)
+
+Each task has `check_in_days`: `weekdays`, `weekends`, or `all` (default).
+This controls **both initial check-ins and follow-ups**, including automated
+legacy clarification retries about the task. Days use the configured timezone,
+not the host clock. Always intersect task days with the global allowed days and
+hours. Overdue dates and high priority never override either limit. User-initiated
+task help, replies and edits remain available any day, including outside the
+global notification window. Use task lifecycle availability for inbound replies;
+the check-in day filter applies only to proactive messages. Preserve existing
+task/cycle/identity checks. Smart Snooze holds only the remaining current allowed
+window: a start-work reply outside it is accepted without a hold or future hold.
+
+When adding a task for proactive check-ins, first read the saved global window.
+**Only if all seven distinct days are enabled**, ask: “Check-ins on weekdays,
+weekends, or all? Default: all.” Explain once that this also includes follow-ups.
+Reuse an answer already supplied for that task; do not ask again. When adding
+several tasks, apply a shared answer only if the user explicitly gives one for
+the group; otherwise collect each task’s choice. Do not infer days from titles.
+If any fewer than seven days are enabled, **do not ask**; omit the flag or use
+`--check-in-days all`. This includes weekday-only, weekend-only and granular
+windows such as Mon/Wed/Sat. Local-only task entry also defaults to `all` without
+asking notification questions. No separate split-alert toggle is needed.
+
+```sh
+python3 "<skill_dir>/scripts/task-coach.py" add "Garden" --check-in-days weekends
+python3 "<skill_dir>/scripts/task-coach.py" update ID --check-in-days weekdays
+python3 "<skill_dir>/scripts/task-coach.py" show ID
+```
+
+Honor an explicit day choice even with a narrower global window; explain an empty
+intersection without widening the window. Changing global days preserves existing
+task preferences; new tasks still default to `all` when the global window is not
+all seven days. Never silently rewrite task choices or revive stopped/missed
+opportunities after a task edit. Read back the saved choice and explain the next
+eligible day without promising a specific send time.
+
+Fresh setups default to all seven global days. Saved global preferences remain
+unchanged. Older tasks without this field read as `all` without writes. Fresh
+task stores use schema version 2. Setting non-`all` task days in a version 0 or 1
+store requires explicit `migrate`: obtain approval, stop old writers, migrate and
+read back in the approved data scope. Ordinary reads and task operations do not
+silently migrate. Migration preserves IDs, recurrence cycles, task content,
+settings, engine state and receipt/clarification audits; old drafts with implicit
+`all` remain compatible, while changed day preferences invalidate stale drafts.
+Never run older helpers against a migrated store.
 
 ## Completion-based recurring tasks
 
@@ -647,11 +729,13 @@ Existing validated unversioned stores require explicit `migrate` before recurren
 can be added; ordinary reads and ordinary-task operations do not migrate them.
 Ask approval for migration, quiesce old-version writers, then run the helper with
 `migrate` in the approved data scope and read back tasks/settings. Fresh stores use
-task schema version 1. The supported legacy format is the repository's exact
+task schema version 2. The supported legacy format is the repository's exact
 nine-column `tasks` DDL with `user_version=0` (not an arbitrary ten-column variant).
-Migration appends three nullable columns transactionally under the shared exclusive
-directory lock; IDs/content/config and coaching/runtime/receipt/clarification audit
-databases are preserved. Unsupported versions, extra schema objects, malformed
+Migration appends the three nullable recurrence columns if missing and
+`check_in_days TEXT NOT NULL DEFAULT 'all'` transactionally under the shared exclusive
+directory lock. Exact version 1 recurrence stores are also supported. IDs,
+content, config and coaching/runtime/receipt/clarification audit databases are
+preserved. Unsupported versions, extra schema objects, malformed
 rows and incompatible DDL refuse rather than reset. Never repair refusal by
 editing/deleting data. Old binaries must not write the migrated store.
 

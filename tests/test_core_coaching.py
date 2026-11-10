@@ -257,6 +257,7 @@ class EngineTest(unittest.TestCase):
             engine.acknowledge(self.receipt(events[0]), now=later)
 
     def test_missed_slot_is_not_caught_up_and_day_rollover_selects_alternative(self):
+        self.cli('setup', '--update', '--weekdays', 'mon,tue,wed,thu,fri')
         engine, events = self.prepare()
         missed = datetime.fromisoformat(events[0]['expires'])
         self.assertFalse(engine.tick(now=missed, binding=BINDING)['wakeAgent'])
@@ -441,6 +442,7 @@ class EngineTest(unittest.TestCase):
                     self.cli('update', '1', '--status', 'open')
 
     def test_disallowed_day_does_not_consume_a_task_selection(self):
+        self.cli('setup', '--update', '--weekdays', 'mon,tue,wed,thu,fri')
         engine = self.engine()
         result = engine.tick(now=datetime(2030, 1, 12, 12, tzinfo=timezone.utc), binding=BINDING)
         self.assertFalse(result['wakeAgent'])

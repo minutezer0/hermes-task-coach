@@ -21,9 +21,10 @@ def same_cycle(snapshot, task):
 def same_snapshot(snapshot, task):
     if task is None:
         return False
-    # Migration adds only nullable fields, never changes a historical plain task.
-    fields = ('repeat_interval', 'cycle_id', 'last_completion')
-    return dict(snapshot, **{k: snapshot.get(k) for k in fields}) == dict(task, **{k: task.get(k) for k in fields})
+    # Migrations preserve historical task meaning, including all allowed days.
+    defaults = dict.fromkeys(('repeat_interval', 'cycle_id', 'last_completion'))
+    defaults['check_in_days'] = 'all'
+    return (defaults | snapshot) == (defaults | task)
 
 
 def next_due(completed, repeat, zone):

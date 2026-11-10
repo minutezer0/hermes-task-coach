@@ -69,13 +69,11 @@ class SmartSnoozeTest(unittest.TestCase):
         expired = runtime.status(now='2030-01-08T08:00:00Z')
         self.assertFalse(expired['notification_policy']['active'])
 
-    def test_off_start_work_rejects_old_window_before_audit_or_engine_change(self):
+    def test_off_start_work_accepts_reply_from_old_window_without_hold(self):
         runtime, root, row = self.accepted(enabled=False)
-        before = runtime.coach.status()
-        with self.assertRaisesRegex(ValueError, 'current'):
-            self.start(runtime, row, '2030-01-08T10:00:00Z')
-        self.assertEqual(runtime.coach.status(), before)
-        self.assertFalse(runtime.status().get('engagements'))
+        self.assertTrue(self.start(runtime, row, '2030-01-08T10:00:00Z')['engaged'])
+        self.assertEqual(runtime.coach.status()['episode']['stopped'], 'owner-engaged')
+        self.assertFalse(runtime.status().get('smart_snooze_hold'))
 
     def test_hold_survives_clock_regression(self):
         from datetime import datetime, timedelta
@@ -211,13 +209,13 @@ class SmartSnoozeTest(unittest.TestCase):
         self.assertIn('BEFORE', plan['inbound_instruction'])
         self.assertIn('smart-snooze', plan['cron_argv'][4])
         root = Path(__file__).resolve().parents[1]
-        self.assertIn('version = "0.1.0rc8"', (root/'pyproject.toml').read_text())
+        self.assertIn('version = "0.1.0rc9"', (root/'pyproject.toml').read_text())
         for path in ('README.md', 'skills/task-coach/SKILL.md', 'skills/task-coach/references/native-runtime.md', 'skills/task-coach/references/coaching.md'):
             text = (root/path).read_text()
             self.assertIn('Smart Snooze', text)
             self.assertIn('runtime smart-snooze', text)
         skill = (root/'skills/task-coach/SKILL.md').read_text()
-        self.assertIn('0.1.0-rc.8', skill)
+        self.assertIn('0.1.0-rc.9', skill)
         self.assertIn('hermes sessions refresh-prompts --session ID --json', skill)
 
     def test_hold_admitted_after_preflight_prevents_claim(self):

@@ -82,6 +82,16 @@ def current_cycles(driver, records):
                for record in records for candidate in record['candidates'])
 
 
+def current_days(driver, records, now):
+    """An automated question must respect every candidate task's current days."""
+    from .coaching import check_in_day_allowed
+    tasks = {task['id']: task for task in driver.coach.tasks()}
+    zone = driver.coach.config()['timezone']
+    return all(candidate['task']['id'] in tasks
+               and check_in_day_allowed(tasks[candidate['task']['id']], now, zone)
+               for record in records for candidate in record['candidates'])
+
+
 def spacing_ok(runtime, cycle, now):
     receipts = [instant(row['receipt']['delivered_at']) for row in runtime['outbox'].values()
                 if retry_row(row) and row['state'] == 'confirmed'
@@ -148,7 +158,7 @@ def prepare(driver, runtime, engine, now):
         for record in held:
             record.update(state='retired', resolved_at=now.isoformat())
         return None
-    if cycle['blocked'] or not current_cycles(driver, held):
+    if cycle['blocked'] or not current_cycles(driver, held) or not current_days(driver, held, now):
         return quiet
     for event in cycle['events']:
         if event['state'] != 'planned':
@@ -182,6 +192,7 @@ def authorize(driver, runtime, engine, row, now):
             or sorted(c['id'] for c in pending(runtime)) != row['intent']['clarification_ids']
             or not all(c['state'] == 'pending' for c in pending(runtime))
             or not current_cycles(driver, pending(runtime))
+            or not current_days(driver, pending(runtime), now)
             or unresolved_engine(engine)
             or engine['paused'] or not engine['episode'] or engine['episode'].get('window_stopped')
             or any(s['stopped'] not in SAFE_STOPS for s in sequences(engine['episode']))
