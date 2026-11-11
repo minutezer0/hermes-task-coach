@@ -75,7 +75,7 @@ class HistoryGuidanceTest(unittest.TestCase):
             self.assertIn('--history-plan-file', text)
             self.assertNotIn('limit=100', text)
             self.assertNotIn('Page backward', text)
-        self.assertIn('0.1.0-rc.10', skill)
+        self.assertIn('1.0.0', skill)
 
 if __name__ == '__main__':
     unittest.main()

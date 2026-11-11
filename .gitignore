@@ -2,6 +2,8 @@
 !/.gitignore
 !/LICENSE
 !/README.md
+!/docs/
+!/docs/command-reference.md
 !/pyproject.toml
 !/tests/
 !/tests/test_core*.py
