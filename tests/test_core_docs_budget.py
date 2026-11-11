@@ -51,6 +51,16 @@ class DocumentationBudgetTest(unittest.TestCase):
         shared = [names for names in seen.values() if len(names) > 1]
         self.assertEqual(shared, [], f'duplicated paragraphs across {shared}')
 
+    def test_readme_links_are_absolute_so_they_resolve_on_pypi(self):
+        # README.md is the PyPI project description; PyPI does not rewrite
+        # relative links, so every link there must be an absolute URL.
+        text = (ROOT / 'README.md').read_text()
+        links = re.findall(r'\]\(([^)]+)\)', text)
+        self.assertTrue(links, 'expected at least one link')
+        for link in links:
+            with self.subTest(link=link):
+                self.assertRegex(link, r'^https?://')
+
     def test_removed_surfaces_are_not_documented(self):
         for name in BUDGETS:
             text = (ROOT / name).read_text()

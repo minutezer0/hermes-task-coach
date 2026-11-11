@@ -117,9 +117,10 @@ when you actually finished. Missed occurrences do not build up a backlog.
   the TUI is a working surface, not a notification target.
 
 For direct commands, setup defaults, storage details, scheduling mechanics and
-reset instructions, see the [command reference](docs/command-reference.md).
+reset instructions, see the
+[command reference](https://github.com/minutezer0/hermes-task-coach/blob/main/docs/command-reference.md).
 The guide also covers direct installation with pip and detailed troubleshooting.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/minutezer0/hermes-task-coach/blob/main/LICENSE).
