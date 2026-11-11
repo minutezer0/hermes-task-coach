@@ -11,6 +11,7 @@ BUDGETS = {
     'skills/task-coach/references/native-runtime.md': 700,
     'skills/task-coach/references/coaching.md': 150,
     'README.md': 320,
+    'docs/command-reference.md': 300,
 }
 
 

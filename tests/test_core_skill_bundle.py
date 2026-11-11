@@ -46,9 +46,11 @@ class SkillBundleTest(unittest.TestCase):
         text = (root / "README.md").read_text()
         install = "hermes skills install minutezer0/hermes-task-coach/skills/task-coach"
         self.assertIn(install, text)
-        self.assertLess(text.index(install), text.index("pip install"))
+        # pip is documented in the command reference, not offered as the primary path.
+        self.assertNotIn("pip install", text)
+        self.assertIn("pip install", (root / "docs/command-reference.md").read_text())
         self.assertIn("does not itself launch a chat", text)
-        self.assertIn("ask Hermes to set up Task Coach", text)
+        self.assertIn("Set up Task Coach", text)
         self.assertNotIn("PYTHONPATH=src", text)
         self.assertNotIn("both are needed", text)
 
