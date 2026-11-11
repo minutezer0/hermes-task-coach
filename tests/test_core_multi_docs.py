@@ -7,11 +7,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class MultiTaskDocumentationTest(unittest.TestCase):
-    def test_readme_contains_markdown_not_reader_line_numbers(self):
+    def test_readme_is_markdown_and_flags_live_in_the_reference(self):
         text = (ROOT / 'README.md').read_text()
         self.assertTrue(text.startswith('# Hermes Task Coach\n'))
         self.assertIsNone(re.search(r'^\d+\|', text, re.MULTILINE))
-        self.assertIn('--max-tasks-per-window', text)
+        reference = (ROOT / 'docs/command-reference.md').read_text()
+        self.assertIn('--max-tasks-per-window', reference)
 
     def test_chat_setup_shows_two_before_keep_or_customize(self):
         text = (ROOT / 'skills/task-coach/SKILL.md').read_text()

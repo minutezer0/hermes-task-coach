@@ -209,13 +209,13 @@ class SmartSnoozeTest(unittest.TestCase):
         self.assertIn('BEFORE', plan['inbound_instruction'])
         self.assertIn('smart-snooze', plan['cron_argv'][4])
         root = Path(__file__).resolve().parents[1]
-        self.assertIn('version = "0.1.0rc10"', (root/'pyproject.toml').read_text())
-        for path in ('README.md', 'skills/task-coach/SKILL.md', 'skills/task-coach/references/native-runtime.md', 'skills/task-coach/references/coaching.md'):
+        self.assertIn('version = "1.0.0"', (root/'pyproject.toml').read_text())
+        for path in ('docs/command-reference.md', 'skills/task-coach/SKILL.md', 'skills/task-coach/references/native-runtime.md'):
             text = (root/path).read_text()
             self.assertIn('Smart Snooze', text)
             self.assertIn('runtime smart-snooze', text)
         skill = (root/'skills/task-coach/SKILL.md').read_text()
-        self.assertIn('0.1.0-rc.10', skill)
+        self.assertIn('1.0.0', skill)
         self.assertIn('hermes sessions refresh-prompts --session ID --json', skill)
 
     def test_hold_admitted_after_preflight_prevents_claim(self):

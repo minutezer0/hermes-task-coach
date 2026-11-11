@@ -8,8 +8,8 @@ class PackagingTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         package = tomllib.loads((root / 'pyproject.toml').read_text())['project']['version']
         skill = (root / 'skills/task-coach/SKILL.md').read_text().split('version: ', 1)[1].splitlines()[0]
-        self.assertEqual(package, '0.1.0rc10')
-        self.assertEqual(skill.replace('-rc.', 'rc'), package)
+        self.assertEqual(package, '1.0.0')
+        self.assertEqual(skill, package)
 
     def test_packaged_console_entrypoint(self):
         path = Path(__file__).resolve().parents[1] / "pyproject.toml"
