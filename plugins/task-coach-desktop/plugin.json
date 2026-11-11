@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "task-coach-desktop",
+  "version": "0.1.0-alpha.1",
+  "description": "Local task management and experimental proactive coaching in ChatGPT desktop.",
+  "author": {"name": "minutezer0"},
+  "repository": "https://github.com/minutezer0/hermes-task-coach",
+  "license": "MIT",
+  "extensions": {
+    "com.openai": {
+      "requires_local_executor": true,
+      "onboardingSkill": "./skills/task-coach-desktop/SKILL.md",
+      "interface": {
+        "displayName": "Task Coach Desktop (experimental)",
+        "shortDescription": "Local tasks and conversational follow-through",
+        "longDescription": "Manage tasks locally and set up experimental check-ins in one desktop conversation. Requires Python 3.11+, macOS or a Linux host, and native scheduling access for proactive use.",
+        "developerName": "minutezer0",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "defaultPrompt": ["Help me set up Task Coach Desktop, one question at a time."]
+      }
+    }
+  }
+}
