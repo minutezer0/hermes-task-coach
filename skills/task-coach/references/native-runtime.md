@@ -42,8 +42,9 @@ Completion, snooze, cancellation or deletion of the focused task does not releas
 immediately, and re-enable applies only to future, unconsumed start-work replies. Retrying an old message never
 recreates, extends or renews a hold, including messages recorded while OFF, and nothing suppressed or expired is
 replayed while stopped sequences never revive; already planned, future unexpired events may still become eligible after
-disabling. Expiry is the current allowed local window end, not a task deadline or scheduler reset, and the next allowed
-day is eligible even if cleanup never ran and the task remains open—ordinary preflight clears/reuses an expired slot.
+disabling. Expiry is the saved absolute instant at the originating allowed local window end, not a task deadline or
+scheduler reset. Later timezone/window changes neither shorten nor extend that saved expiry. The next allowed day
+is eligible even if cleanup never ran and the task remains open—ordinary preflight clears/reuses an expired slot.
 Weekdays and DST follow the existing real-instant window policy; overnight windows remain unsupported. The shared
 directory lock fences planning/claims and the final refreshed-clock transport check against newly recorded holds, but a
 send already in flight cannot be recalled. Failed/uncertain attempts remain nonretryable, and malformed or unknown

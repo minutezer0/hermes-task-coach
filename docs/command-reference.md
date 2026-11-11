@@ -61,7 +61,7 @@ python3 "<skill_dir>/scripts/task-coach.py" update 3 --status cancelled
 python3 "<skill_dir>/scripts/task-coach.py" done 3
 python3 "<skill_dir>/scripts/task-coach.py" snooze 3 2031-04-12T09:00:00+02:00
 
-# Back up everything as JSON
+# Export tasks as JSON (not settings, coaching state or delivery records)
 python3 "<skill_dir>/scripts/task-coach.py" export
 ```
 
@@ -191,9 +191,9 @@ refused rather than silently overwritten.
 | `--interactive` | off | Prompt for settings |
 | `--update` | off | Explicitly update saved settings |
 
-The maximum interval must be at least the minimum, and both must fit inside a
-same-day window. Overnight windows are not supported. Preferences alone never
-trigger a message.
+The maximum interval must be at least the minimum. The follow-up count multiplied
+by the minimum interval must fit inside the same-day window; the maximum interval
+need not fit. Overnight windows are not supported. Preferences alone never trigger a message.
 
 ## Data directory
 
