@@ -1,7 +1,8 @@
 ---
 name: task-coach
-description: "Use when managing tasks or coaching follow-through. Guide local task setup and optional native Hermes check-ins."
+description: "Local task setup, proactive check-ins, and follow-through."
 version: 1.0.0
+author: "Chris Kitella (minutezer0) + Hermes Agent"
 license: MIT
 platforms: [linux]
 metadata:
