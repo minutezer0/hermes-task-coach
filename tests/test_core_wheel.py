@@ -29,7 +29,7 @@ class WheelArtifactTest(unittest.TestCase):
                 return result
             run([sys.executable, "-B", "-c", "import os, setuptools.build_meta as b; os.chdir(%r); b.build_wheel(%r)" % (str(project), str(dist))])
             wheel, = dist.glob("*.whl")
-            self.assertEqual(wheel.name, "task_coach-1.0.0-py3-none-any.whl")
+            self.assertEqual(wheel.name, "task_coach-1.0.1-py3-none-any.whl")
             with zipfile.ZipFile(wheel) as archive:
                 names = archive.namelist()
                 for path in (source / "skills" / "task-coach").rglob("*"):
@@ -68,7 +68,7 @@ class WheelArtifactTest(unittest.TestCase):
             self.assertTrue(capability['local_first'])
             self.assertTrue(capability['degraded'])
             self.assertFalse(capability['history_required'])
-            self.assertIn('1.0.0', (skill / 'SKILL.md').read_text())
+            self.assertIn('1.0.1', (skill / 'SKILL.md').read_text())
             run(command + ['runtime', 'record-engagement', '--help'], env=env)
             # Neither the build tree nor the installed Python package is available to the system interpreter.
             shutil.rmtree(project)

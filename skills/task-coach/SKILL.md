@@ -1,7 +1,7 @@
 ---
 name: task-coach
 description: "Local task setup, proactive check-ins, and follow-through."
-version: 1.0.0
+version: 1.0.1
 author: "Chris Kitella (minutezer0) + Hermes Agent"
 license: MIT
 platforms: [linux]
