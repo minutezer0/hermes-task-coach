@@ -7,10 +7,9 @@ and troubleshooting. For conversational setup, ask Hermes: “Set up Task Coach.
 
 ## Running the helper
 
-The helper ships inside the installed skill:
-`<skill_dir>/scripts/task-coach.py`. Use the real directory Hermes reports and
-quote the path if it contains spaces. Task data lives outside the skill directory,
-so replacing or reinstalling the skill does not delete tasks.
+The helper is `<skill_dir>/scripts/task-coach.py` in the installed skill; use the real
+directory Hermes reports and quote paths with spaces. Task data lives outside the skill
+directory, so replacing or reinstalling the skill does not delete tasks.
 
 ## Initialize and configure
 
@@ -70,8 +69,27 @@ python3 "<skill_dir>/scripts/task-coach.py" export
 - **Due** accepts a date (`2031-04-05`) or a timestamp with an offset
   (`2031-04-05T12:00:00+02:00`).
 - **Snooze** requires a timestamp with an offset and does not change the due date.
-- **Notes** are plain text; you can maintain checkbox lines by hand.
 - `done` is idempotent and keeps history.
+
+## Checklists in notes
+Checklist items are ordinary Markdown task lines in notes, with or without a bullet;
+nothing else is stored. `show ID` includes notes; `checklist show ID` returns progress.
+
+```sh
+python3 "<skill_dir>/scripts/task-coach.py" checklist show 3
+python3 "<skill_dir>/scripts/task-coach.py" checklist check 3 2 \
+  --expected-notes-digest NOTES_DIGEST
+python3 "<skill_dir>/scripts/task-coach.py" checklist uncheck 3 2 \
+  --expected-notes-digest NOTES_DIGEST
+```
+
+`checklist show` returns `checked`, `total`, items with a 1-based `index`, and
+`notes_digest`; report progress as “6/11 checked” and pass that digest as
+`--expected-notes-digest`. A different digest means the notes changed: re-read and
+retry. Bare or `-`/`*`/`+`-bulleted `[ ]`, `[x]` or `[X]` lines with 0–3 leading spaces count.
+Fenced blocks and all lines indented 4+ spaces are ignored, including nested items;
+full nested-checklist support is not provided. A tick changes only the marker (plus
+`updated_at`), never adds a bullet and never completes the task, even at the last item.
 
 ## Check-in days
 

@@ -49,13 +49,19 @@ All commands return JSON. Use returned task IDs, never guessed counters.
 - `list`, `export`, `search QUERY`, `show ID`
 - `update ID [--title TEXT] [--notes TEXT] [--priority ...] [--status open|done|cancelled] [--due ...] [--check-in-days ...]`
 - `done ID`, `snooze ID AWARE_TIMESTAMP`
+- `checklist show ID`; `checklist check|uncheck ID INDEX --expected-notes-digest TOKEN`
 
 Read the task before and after every change and preserve unrelated fields. Date-only
 values use YYYY-MM-DD; timestamps require an explicit offset or Z. Resolve relative
 dates with the live clock in the configured timezone. Titles and notes are data: use
 argument arrays or correct shell quoting. Never infer completion, deadlines or
-snoozes from conversation. Checklist lines may live in notes; ticking one entry is
-not permission to complete the task. Occurrence rows, external providers and native
+snoozes from conversation. Checklist progress lives in notes, written as bare `[ ]`
+or `[x]` lines or with a `-`, `*` or `+` bullet; read it with `checklist show ID`,
+tick one item with `checklist check|uncheck ID INDEX --expected-notes-digest TOKEN`, and
+report checked/total. A tick changes only the marker, preserves the original line
+format, never adds a bullet or normalizes other lines, and never completes the task,
+even at the last item, nor changes status, due, snooze or recurrence.
+Occurrence rows, external providers and native
 subtasks are not implemented. Completion-based recurrence reuses the same row.
 
 `init` creates an empty store; never insert sample tasks. Repeated `setup` preserves
