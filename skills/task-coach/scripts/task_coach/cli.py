@@ -236,7 +236,7 @@ def warn_check_in_days(task, config):
           + "'; it will not be checked in until they overlap", file=sys.stderr)
 
 
-def main(argv=None):
+def main(argv=None, *, include_runtime=True):
     arguments = list(sys.argv[1:] if argv is None else argv)
     positional = arguments
     if positional[:1] == ['--data-dir']:
@@ -245,7 +245,7 @@ def main(argv=None):
         positional = positional[1:]
     is_tick = positional[:2] in (['coach', 'tick'], ['runtime', 'preflight'])
     try:
-        return run(arguments)
+        return run(arguments, include_runtime=include_runtime)
     except SystemExit as error:
         if is_tick and error.code:
             print(json.dumps(dict(wakeAgent=False, reason='invalid-tick-arguments')))
@@ -258,7 +258,7 @@ def main(argv=None):
         return 2
 
 
-def run(argv=None):
+def run(argv=None, *, include_runtime=True):
     parser = argparse.ArgumentParser(prog="task-coach")
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
     commands = parser.add_subparsers(dest="command", required=True)
@@ -270,9 +270,11 @@ def run(argv=None):
         "up to 2 distinct tasks per window (maximum 1..10); "
         "2 unanswered followups per task; intervals 30–120 minutes. Intervals must be 1..1440 "
         "minutes and followups 0..20, fitting within a same-day window at the minimum "
-        "interval. Choose local tasks or preferences for already-configured Discord "
+        "interval. " + ("Choose local tasks or preferences for already-configured Discord "
         "check-ins; setup never connects messaging or enables delivery, "
-        "and automation remains disabled.",
+        "and automation remains disabled." if include_runtime else
+        "Desktop setup saves local preferences only; native scheduling is configured separately "
+        "and automation remains disabled."),
     )
     setup.add_argument("--interactive", action="store_true", help="prompt for settings; blank keeps the displayed default")
     setup.add_argument("--update", action="store_true", help="explicitly update an existing configuration")
@@ -299,8 +301,9 @@ def run(argv=None):
         outcome = operations.add_parser(operation, help='Stop episode on owner engagement or failed send')
         outcome.add_argument('--event-token', required=True)
         outcome.add_argument('--binding', type=json.loads, required=True)
-    from .driver import add_parser
-    add_parser(commands)
+    if include_runtime:
+        from .driver import add_parser
+        add_parser(commands)
     add = commands.add_parser("add")
     add.add_argument("title", type=title_value)
     add.add_argument("--notes", default="")

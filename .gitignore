@@ -35,3 +35,12 @@ dist/
 *.db*
 config.json
 .env*
+
+!/plugins/
+!/plugins/**/
+!/plugins/**/*.json
+!/plugins/**/*.md
+!/plugins/**/*.py
+!/scripts/
+!/scripts/build-chatgpt-plugin.py
+!/plugins/task-coach-desktop/README.md

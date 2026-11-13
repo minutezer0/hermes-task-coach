@@ -124,3 +124,9 @@ The guide also covers direct installation with pip and detailed troubleshooting.
 ## License
 
 MIT. See [LICENSE](https://github.com/minutezer0/hermes-task-coach/blob/main/LICENSE).
+
+## Experimental ChatGPT desktop integration
+
+The separate [desktop development guide](https://github.com/minutezer0/hermes-task-coach/blob/codex/chatgpt-desktop-v1.0.1/plugins/task-coach-desktop/README.md)
+covers the macOS prototype, its package, and live-test limitations. The Hermes
+installation above continues to use the Hermes skill and runtime.
