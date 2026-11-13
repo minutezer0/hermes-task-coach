@@ -24,7 +24,10 @@ class TaskWriterLockTest(unittest.TestCase):
             stderr=subprocess.PIPE, text=True)
 
     def test_all_task_writers_wait_for_runtime_directory_lock(self):
-        for args in [('add', 'Another task'), ('update', '1', '--notes', 'Edited'),
+        self.cli('update', '1', '--notes', '- [ ] Item')
+        digest = self.cli('checklist', 'show', '1')['notes_digest']
+        for args in [('checklist', 'check', '1', '1', '--expected-notes-digest', digest),
+                     ('add', 'Another task'), ('update', '1', '--notes', 'Edited'),
                      ('done', '1'), ('snooze', '1', '2031-01-01T00:00:00Z')]:
             with self.subTest(command=args[0]):
                 fd = os.open(self.data, os.O_RDONLY | os.O_DIRECTORY)

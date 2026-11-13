@@ -1,6 +1,7 @@
 """Command-line interface for the local task store."""
 import argparse
 from datetime import date, datetime, timezone
+import hashlib
 import re
 from contextlib import closing, contextmanager
 import json
@@ -113,6 +114,60 @@ TASK_DDL = "CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT
 
 def task_record(row):
     return dict(row)
+
+
+CHECKLIST_LINE = re.compile(r"^([ ]{0,3})(?:([-*+])[ \t]+)?\[([ xX])\](?:[ \t]+(.*?))?[ \t]*$")
+CHECKLIST_FENCE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})")
+CHECKLIST_FENCE_END = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})[ \t]*$")
+NOTES_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+
+def notes_digest(notes):
+    return hashlib.sha256(notes.encode("utf-8")).hexdigest()
+
+
+def checklist_matches(notes):
+    """Return (line number, match) pairs for clear task-list lines outside code fences."""
+    matches, fence = [], None
+    for number, line in enumerate(notes.splitlines()):
+        opening = CHECKLIST_FENCE.match(line)
+        if fence is not None:
+            if opening and opening.group(1)[0] == fence[0] and len(opening.group(1)) >= len(fence) and CHECKLIST_FENCE_END.match(line):
+                fence = None
+            continue
+        if opening:
+            fence = opening.group(1)
+            continue
+        match = CHECKLIST_LINE.match(line)
+        if match:
+            matches.append((number, match))
+    return matches
+
+
+def checklist_items(notes):
+    return [{"index": index, "checked": match.group(3) in "xX", "text": match.group(4) or ""}
+            for index, (_, match) in enumerate(checklist_matches(notes), start=1)]
+
+
+def set_checklist_item(notes, index, checked):
+    """Return notes with one item's marker changed; every other character is untouched."""
+    matches = checklist_matches(notes)
+    if not 1 <= index <= len(matches):
+        raise ValueError("checklist item index out of range")
+    number, match = matches[index - 1]
+    if (match.group(3) in "xX") == checked:
+        return notes
+    lines = notes.splitlines(keepends=True)
+    line, start = lines[number], match.start(3)
+    lines[number] = line[:start] + ("x" if checked else " ") + line[start + 1:]
+    return "".join(lines)
+
+
+def checklist_payload(task):
+    items = checklist_items(task["notes"])
+    return {"id": task["id"], "notes_digest": notes_digest(task["notes"]),
+            "checked": sum(1 for item in items if item["checked"]),
+            "total": len(items), "items": items}
 
 
 def validate_store(db):
@@ -276,6 +331,17 @@ def run(argv=None):
     snooze = commands.add_parser("snooze")
     snooze.add_argument("id", type=int)
     snooze.add_argument("until", type=lambda value: due_value(value, aware_only=True))
+    checklist = commands.add_parser("checklist", description="Read or tick Markdown checklist items in a task's notes.")
+    checklist_operations = checklist.add_subparsers(dest="checklist_command", required=True)
+    checklist_show = checklist_operations.add_parser("show", help="Index checklist items and report checked/total")
+    checklist_show.add_argument("id", type=int)
+    for operation, help_text in (("check", "Tick one indexed checklist item"),
+                                 ("uncheck", "Clear one indexed checklist item")):
+        mutation = checklist_operations.add_parser(operation, help=help_text)
+        mutation.add_argument("id", type=int)
+        mutation.add_argument("index", type=int)
+        mutation.add_argument("--expected-notes-digest", required=True,
+                              help="notes_digest from checklist show; refuses a stale snapshot")
     args = parser.parse_args(argv)
     if hasattr(args, "id") and not 1 <= args.id <= 9223372036854775807:
         parser.error("id must be a positive SQLite integer")
@@ -462,6 +528,22 @@ def run(argv=None):
                 result = get_task(db, args.id)
                 if changes.get("check_in_days") or changes.get("status") == "open":
                     warn_check_in_days(result, config)
+            elif args.command == "checklist":
+                task = get_task(db, args.id)
+                if args.checklist_command == "show":
+                    result = checklist_payload(task)
+                else:
+                    if not NOTES_DIGEST.fullmatch(args.expected_notes_digest or ""):
+                        raise ValueError("invalid expected notes digest")
+                    if args.expected_notes_digest != notes_digest(task["notes"]):
+                        raise ValueError("notes changed since checklist read; re-read the checklist")
+                    notes = set_checklist_item(task["notes"], args.index,
+                                               args.checklist_command == "check")
+                    if notes != task["notes"]:
+                        db.execute("UPDATE tasks SET notes = ?, updated_at = ? WHERE id = ?",
+                                   (notes, datetime.now(timezone.utc).isoformat(), args.id))
+                        db.commit()
+                    result = checklist_payload(get_task(db, args.id))
             elif args.command == "show":
                 result = get_task(db, args.id)
             elif args.command == "search":
