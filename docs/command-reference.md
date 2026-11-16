@@ -151,8 +151,7 @@ complete or cancel the task.
 Priority and due dates both raise a task's chance of being picked. Low, normal
 and high priorities weigh 1, 2 and 4. A due date inside the next week raises the
 weight up to 4.5 times as it approaches; an overdue task gets five times its base
-weight. Due dates never override your allowed days or hours and do not guarantee
-a reminder at a specific time.
+weight. Due dates never override allowed days or hours or guarantee a reminder time.
 
 Recurring tasks are excluded from check-ins until their due date arrives.
 Ordinary dated tasks can be selected before their due date.
@@ -161,7 +160,9 @@ Ordinary dated tasks can be selected before their due date.
 
 Off by default. When enabled, an explicit “starting now” reply to a check-in
 holds all Task Coach notifications until the end of your current window without
-changing any task.
+changing any task. It needs a confirmed route. Run
+`runtime configure --confirm-setup` with that route first; a fresh or route-less
+runtime refuses the write and creates no new store.
 
 ```sh
 python3 "<skill_dir>/scripts/task-coach.py" runtime smart-snooze
@@ -232,9 +233,8 @@ or uninitialized directory. Files must be owned by you with safe permissions:
 `init` and `setup` apply directory mode `0700` and file mode `0600`, and other
 commands refuse unsafe modes. Symlinked or hardlinked storage is refused.
 
-Tasks use **schema version 2**. Version 1.0.0 is a base install: there is no
-migration from earlier releases, and no upgrade command exists on this branch.
-A fresh `init` creates version 2 directly.
+Tasks use **schema version 2**; a fresh `init` creates it directly. There is no
+migration from earlier releases and no upgrade command on this branch.
 
 ## Native cron and check-in wiring
 

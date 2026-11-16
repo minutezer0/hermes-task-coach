@@ -24,8 +24,9 @@ python3 "<skill_dir>/scripts/task-coach.py" runtime smart-snooze
 
 During **check-in** setup, separately ask: “Smart Snooze is off by default. If you explicitly start working after a
 check-in, should I hold all Task Coach check-ins until your current notification window ends?” Reuse the saved `runtime
-smart-snooze` value on resumed setup instead of re-interviewing; persist only the explicit choice and read back. Never
-ask this for local-only task setup, and this choice alone never activates cron. Record clear engagement **BEFORE
+smart-snooze` value on resumed setup instead of re-interviewing; persist only the explicit choice after the confirmed
+route is configured, and read back. Never ask this for local-only task setup, and this choice alone never activates
+cron. Record clear engagement **BEFORE
 substantive assistance, memory recall or delegation**, when an applicable accepted check-in exists, using `runtime
 record-engagement --binding JSON --owner OWNER --message-id INBOUND_ID --event-token EVENT --task-id TASK [--cycle-id
 CYCLE] --intent start-work` only for genuine explicit agreement to begin working now; `engaged` is general engagement
@@ -65,9 +66,13 @@ without history, and routine cron never fetches it even after opt-in: only expli
 **delivery-verification** may read history, after checking exact-route saved consent and caller tool availability. Read
 `runtime history-preference` to reuse the saved choice when setup resumes. After confirmed Discord check-in setup,
 persist an explicit Yes with `runtime history-preference --enable --route FULL_CONFIRMED_ROUTE_JSON --confirm-history`;
-an explicit No or change uses `runtime history-preference --disable`, and either change is read back. Missing
-preferences mean No, not approval. Consent includes the exact owner/profile/account/chat/thread, channel and bot route;
-a changed route needs new consent, and disable/re-enable rotates the grant generation.
+an explicit No or change uses `runtime history-preference --disable`, and either change is read back. A No is already
+effective because history is OFF, but do not describe it as saved until that write reads back. Configure the confirmed
+route first: a preference write before configure is refused and creates no new runtime store, though it does not remove
+existing artifacts. A runtime file with a sidecar, or one that is not a valid store, is refused rather than repaired or
+deleted; recover it only after an explicit diagnostic review. Missing preferences mean No, not approval.
+Consent includes the exact owner/profile/account/chat/thread, channel and bot route; a changed route needs new consent,
+and disable/re-enable rotates the grant generation.
 
 For each explicitly requested operation, run `runtime history-plan --purpose reply-recovery|delivery-verification
 --target DECIMAL_ID --confirm-history` and save its returned JSON dict in a private plan file. The grant binds the exact
@@ -240,9 +245,10 @@ python3 "<skill_dir>/scripts/task-coach.py" runtime native-plan --profile-home A
 
 All commands also accept `--data-dir PATH` **before** the subcommand. `configure` requires `--confirm-setup`, stores a
 separate confirmed route in outbox.sqlite3, and rejects changing that route once drafts exist (use a separately approved
-data directory). Local config automation_enabled remains false; the runtime route is the separate explicit opt-in,
-`live_verified:false` is truthful status rather than an activation boolean, and there is no `qualified:true` escape
-hatch. `native-plan` only returns JSON artifacts: `script_path`, `script_text`, `cron_argv`, `inbound_instruction`,
+data directory). It is also the gate for preferences: save history and Smart Snooze only after it succeeds, and read
+both back before installing or testing. Local config automation_enabled remains false; the runtime route is the
+separate explicit opt-in, `live_verified:false` is truthful status rather than an activation boolean, and there is no
+`qualified:true` escape hatch. `native-plan` only returns JSON artifacts: `script_path`, `script_text`, `cron_argv`, `inbound_instruction`,
 `initially_paused:true`, `live_verified:false`. No profile writes, jobs, messages or account changes occur, so show
 these artifacts and obtain approval before installing. The wrapper path must resolve under the active profile's scripts
 directory; save script_text verbatim to script_path as a private executable (0700), never overwriting an existing script

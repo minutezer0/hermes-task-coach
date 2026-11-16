@@ -1,7 +1,7 @@
 ---
 name: task-coach
 description: "Local task setup, proactive check-ins, and follow-through."
-version: 1.0.1
+version: 1.0.2
 author: "Chris Kitella (minutezer0) + Hermes Agent"
 license: MIT
 platforms: [linux]
@@ -327,13 +327,17 @@ Open naturally, then ask one short question at a time, reusing saved settings fr
    then ask: “Send your check-ins here in this conversation? Default: Yes.”
    Explain that this is where check-ins arrive and that a dedicated channel is also
    possible. If the user declines, resolve their named destination through supported
-   discovery and confirm the exact match.
+   discovery and confirm the exact match. Run `runtime configure --confirm-setup` with
+   that exact route before any preference write; the runtime refuses pre-route writes.
 4. History. Only after check-ins and a confirmed destination, ask separately: “May I
    read a small amount of Discord history here only when you explicitly ask to
    recover a reply or verify delivery? It can include unrelated messages and adds
    model input tokens, including repeated reads. Task Coach works without it, and
    regular check-ins never scan history. Default: No. Allow it?”
-   Local-only setup never asks this question about Discord history.
+   Local-only setup never asks this question about Discord history. Persist the answer
+   with `runtime history-preference` only after configure and read it back. A No is
+   honored immediately because history is already OFF; do not claim it was saved until
+   the disable write succeeds and reads back.
 5. Schedule. Reuse a confirmed timezone; never infer it from the host or the platform.
    UTC in a fresh config is not a confirmed user timezone. Present saved days and
    hours when resuming, otherwise suggest every day 09:00–17:00 with the confirmed
@@ -349,9 +353,11 @@ Open naturally, then ask one short question at a time, reusing saved settings fr
    follow-ups per unanswered task, randomized 30–120 minute spacing, and a reply
    stops further follow-ups for that task while later task check-ins remain scheduled,
    and it never completes the task.
-6. Smart Snooze. Separately ask: “Smart Snooze is off by default. If you explicitly
+6. Smart Snooze. Proactive check-in setup only: never ask this in local-only
+   setup. Separately ask: “Smart Snooze is off by default. If you explicitly
    start working after a check-in, should I hold all Task Coach check-ins until your
-   current notification window ends?” Reuse the saved value on resume. This choice
+   current notification window ends?” Reuse the saved value on resume. Persist the
+   explicit choice only after the route is configured, then read it back. This choice
    never activates cron.
 7. Task. Reuse an existing open task or the one supplied during setup; ask for one
    real task if none exists. The daily maximum is a ceiling — never ask the user to

@@ -312,8 +312,11 @@ class Driver:
             return engine['episode']['day'] if engine['episode'] else None
 
     @contextmanager
-    def transaction(self, *, readonly=False, adopt=True):
+    def transaction(self, *, readonly=False, adopt=True, require_setup=False):
         # Same directory lock as the engine, but never nest these transactions.
+        # An empty file is an uncommitted initialization, not a configured
+        # runtime: callers that need setup validate it before it is touched, so
+        # a refusal does not create a store or rewrite an existing empty one.
         import fcntl
         safe_path(self.directory, True)
         held = getattr(self._locks, 'fd', None)
@@ -324,7 +327,13 @@ class Driver:
             for suffix in ('', '-journal', '-wal', '-shm'):
                 safe_path(Path(str(path) + suffix))
             fresh = not path.exists()
-            if fresh and readonly:
+            empty = fresh
+            if not fresh:
+                # Only a bare zero-byte file is an uncommitted initialization.
+                # A sidecar means SQLite may still hold state; never replace it.
+                empty = path.stat().st_size == 0 and not any(
+                    Path(str(path) + suffix).exists() for suffix in ('-journal', '-wal', '-shm'))
+            if empty and (readonly or require_setup):
                 raise ValueError('runtime setup not confirmed')
             if fresh:
                 created = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -334,7 +343,7 @@ class Driver:
             with closing(sqlite3.connect(target, uri=read_connection)) as db:
                 db.execute('BEGIN' if read_connection else 'BEGIN IMMEDIATE')
                 try:
-                    if fresh:
+                    if empty:
                         db.execute(SCHEMA)
                         db.execute('PRAGMA user_version=1')
                         state = dict(route=None, outbox={}, local_first=dict(after_day=None), smart_snooze_enabled=False)
@@ -347,7 +356,7 @@ class Driver:
                             raise ValueError('invalid runtime state')
                         state = json.loads(rows[0][1])
                     self.validate_state(state)
-                    original = None if fresh else json.dumps(state)
+                    original = None if empty else json.dumps(state)
                     if adopt and 'local_first' not in state:
                         state['local_first'] = dict(after_day=self._policy_boundary(state))
                         self.validate_state(state)
@@ -394,14 +403,15 @@ class Driver:
 
     def history_preference(self, *, enabled=None, route=None, confirm=False):
         """Explicit opt-in for this exact confirmed route; absent rc5 field is OFF."""
-        with self.transaction(readonly=enabled is None, adopt=False) as state:
+        with self.transaction(readonly=enabled is None, adopt=False,
+                              require_setup=enabled is not None) as state:
             if enabled is not None:
                 if type(enabled) is not bool:
                     raise ValueError('history preference must be boolean')
-                if enabled and (not confirm or route != state['route']):
-                    raise ValueError('history requires explicit confirmation of the exact route')
                 if state['route'] is None:
                     raise ValueError('runtime setup not confirmed')
+                if enabled and (not confirm or route != state['route']):
+                    raise ValueError('history requires explicit confirmation of the exact route')
                 state['history_consent'] = dict(enabled=enabled, route=state['route'], generation=uuid.uuid4().hex)
                 # A new consent generation cannot inherit old history evidence.
                 for row in state['outbox'].values():
@@ -535,8 +545,10 @@ class Driver:
     def smart_snooze(self, *, enabled=None, now=None):
         if enabled is not None and type(enabled) is not bool:
             raise ValueError('Smart Snooze preference must be boolean')
-        with self.transaction() as state:
+        with self.transaction(require_setup=enabled is not None) as state:
             if enabled is not None:
+                if state['route'] is None:
+                    raise ValueError('runtime setup not confirmed')
                 if not enabled and state.get('smart_snooze_hold'):
                     hold = state['smart_snooze_hold']
                     cutoff = instant(now or datetime.now(UTC))
