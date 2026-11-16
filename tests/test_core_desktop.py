@@ -370,6 +370,9 @@ class DesktopArtifactTest(unittest.TestCase):
             self.assertFalse(any('tests/' in name or 'fixtures/' in name for name in names))
             self.assertFalse(any(name.endswith(('.sqlite3', '.pyc')) or 'config.json' in name for name in names))
             manifest = json.loads(archive.read('build-manifest.json'))
+            import tomllib
+            self.assertEqual(manifest['core_version'], tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']['version'])
+            self.assertEqual(manifest['task_schema'], 2)
             for name, digest in manifest['sha256'].items():
                 self.assertEqual(hashlib.sha256(archive.read(name)).hexdigest(), digest)
             for module in builder.MODULES:

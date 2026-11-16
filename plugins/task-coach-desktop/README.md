@@ -1,7 +1,7 @@
 # Task Coach Desktop development
 
 Experimental macOS-first ChatGPT desktop integration, based on Hermes Task Coach
-v1.0.1. The plugin has its own version: **0.1.0-alpha.2**. Python 3.11+ with
+v1.0.2. The plugin has its own version: **0.1.0-alpha.3**. Python 3.11+ with
 SQLite and timezone data is required. Cloud and native Windows are out of scope.
 
 ## Boundaries
@@ -35,7 +35,7 @@ From the repository root:
 
 ```sh
 python3 -m unittest discover -s tests -q
-python3 scripts/build-chatgpt-plugin.py --output "$PWD/dist/task-coach-desktop-0.1.0-alpha.2.zip"
+python3 scripts/build-chatgpt-plugin.py --output "$PWD/dist/task-coach-desktop-0.1.0-alpha.3.zip"
 ```
 
 Tests never install a plugin, create a native schedule, send messages or access

@@ -8,7 +8,7 @@ and plan generation work, while installation/activation remain blocked.
 
 ## Boundaries and storage
 
-The launcher wraps the shared v1.0.1 task core with an explicit separate data
+The launcher wraps the shared v1.0.2 task core with an explicit separate data
 directory. Its `desktop.sqlite3` stores one confirmed conversation, a local enable
 gate, an asserted native schedule ID, output/engagement journals and Smart Snooze.
 The shared task and engine schema are unchanged. The desktop store cannot adopt
