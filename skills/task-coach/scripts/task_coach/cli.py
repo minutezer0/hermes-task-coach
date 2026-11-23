@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 DEFAULT_CONFIG = {
     "timezone": "UTC", "weekdays": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
     "notification_start": "09:00", "notification_end": "17:00",
-    "max_tasks_per_window": 2, "max_unanswered_followups": 2, "min_followup_interval": 30,
+    "max_tasks_per_window": 2, "max_unanswered_followups": 1, "min_followup_interval": 30,
     "max_followup_interval": 120, "automation_enabled": False,
 }
 
@@ -268,7 +268,7 @@ def run(argv=None):
         description="Configure local task coaching. No jobs or delivery are enabled.",
         epilog="Defaults: UTC; days mon,tue,wed,thu,fri,sat,sun; window 09:00–17:00; "
         "up to 2 distinct tasks per window (maximum 1..10); "
-        "2 unanswered followups per task; intervals 30–120 minutes. Intervals must be 1..1440 "
+        "1 unanswered followup per task; intervals 30–120 minutes. Intervals must be 1..1440 "
         "minutes and followups 0..20, fitting within a same-day window at the minimum "
         "interval. Choose local tasks or preferences for already-configured Discord "
         "check-ins; setup never connects messaging or enables delivery, "

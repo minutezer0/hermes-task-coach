@@ -1,7 +1,7 @@
 ---
 name: task-coach
 description: "Local task setup, proactive check-ins, and follow-through."
-version: 1.0.2
+version: 1.0.3
 author: "Chris Kitella (minutezer0) + Hermes Agent"
 license: MIT
 platforms: [linux]
@@ -349,8 +349,8 @@ Open naturally, then ask one short question at a time, reusing saved settings fr
 
    Show an existing store's saved maximum instead. Accept 1–10. This is a ceiling,
    not a quota. Then show the saved or default follow-up settings and ask whether to
-   keep or customize them; for defaults, state the user's real window and: up to 2
-   follow-ups per unanswered task, randomized 30–120 minute spacing, and a reply
+   keep or customize them; for defaults, state the user's real window and: up to 1
+   follow-up per unanswered task, randomized 30–120 minute spacing, and a reply
    stops further follow-ups for that task while later task check-ins remain scheduled,
    and it never completes the task.
 6. Smart Snooze. Proactive check-in setup only: never ask this in local-only
@@ -387,7 +387,7 @@ Open naturally, then ask one short question at a time, reusing saved settings fr
     controls and read back the job and the next eligible opportunity.
 
 ```sh
-python3 "<skill_dir>/scripts/task-coach.py" setup --timezone UTC --weekdays mon,tue,wed,thu,fri,sat,sun --notification-start 09:00 --notification-end 17:00 --max-tasks-per-window 2 --max-unanswered-followups 2 --min-followup-interval 30 --max-followup-interval 120
+python3 "<skill_dir>/scripts/task-coach.py" setup --timezone UTC --weekdays mon,tue,wed,thu,fri,sat,sun --notification-start 09:00 --notification-end 17:00 --max-tasks-per-window 2 --max-unanswered-followups 1 --min-followup-interval 30 --max-followup-interval 120
 python3 "<skill_dir>/scripts/task-coach.py" list
 ```
 

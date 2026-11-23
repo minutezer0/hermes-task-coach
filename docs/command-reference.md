@@ -204,7 +204,7 @@ refused rather than silently overwritten.
 | `--notification-start` | `09:00` | Local time, `HH:MM` |
 | `--notification-end` | `17:00` | Local time, same day |
 | `--max-tasks-per-window` | `2` | 1–10 distinct tasks |
-| `--max-unanswered-followups` | `2` | 0–20 per task |
+| `--max-unanswered-followups` | `1` | 0–20 per task |
 | `--min-followup-interval` | `30` | Minutes, 1–1440 |
 | `--max-followup-interval` | `120` | Minutes, 1–1440 |
 | `--interactive` | off | Prompt for settings |
