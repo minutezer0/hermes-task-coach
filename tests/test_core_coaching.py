@@ -53,6 +53,8 @@ class EngineTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.data = Path(self.temp.name) / 'data'
         self.cli('init')
+        # These engine scenarios exercise two retries, independently of defaults.
+        self.cli('setup', '--update', '--max-unanswered-followups', '2')
         self.cli('add', 'Synthetic task')
 
     def cli(self, *args):

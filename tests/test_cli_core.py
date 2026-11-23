@@ -80,6 +80,12 @@ class CLITest(unittest.TestCase):
                 self.assertEqual((self.data / "tasks.sqlite3").read_bytes(), before)
         self.assertEqual(self.run_cli("show", "1"), task)
 
+    def test_fresh_setup_defaults_to_one_unanswered_followup(self):
+        config = self.run_cli("setup")["config"]
+        self.assertEqual(config["max_unanswered_followups"], 1)
+        self.assertEqual(self.run_cli("setup")["config"], config)
+        self.assertEqual(self.run_cli("init")["config"], config)
+
     def test_setup_flags_and_rerun_preservation(self):
         config = self.run_cli("setup", "--timezone", "Europe/Paris", "--weekdays", "mon,wed,fri", "--notification-start", "09:00", "--notification-end", "17:00", "--max-unanswered-followups", "3", "--min-followup-interval", "30", "--max-followup-interval", "60")["config"]
         self.assertEqual(config["timezone"], "Europe/Paris")

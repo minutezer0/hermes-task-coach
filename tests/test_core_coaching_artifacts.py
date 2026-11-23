@@ -59,7 +59,7 @@ class CoachingArtifactTest(unittest.TestCase):
             shutil.rmtree(source)
             env = dict(HOME=str(root / 'synthetic-home'), HERMES_HOME=str(root / 'synthetic-profile'), TMPDIR=str(root), PYTHONDONTWRITEBYTECODE='1')
             console = str(venv / 'bin/task-coach')
-            run([console, 'setup', '--min-followup-interval', '1', '--max-followup-interval', '1'], env=env)
+            run([console, 'setup', '--max-unanswered-followups', '2', '--min-followup-interval', '1', '--max-followup-interval', '1'], env=env)
             run([console, 'add', 'Synthetic installed task'], env=env)
             self.assertEqual(json.loads(run([console, 'coach', 'status'], env=env).stdout)['transport'], 'external-bridge-required')
             self.assertIs(json.loads(run([console, 'coach', 'tick'], env=env).stdout)['wakeAgent'], False)

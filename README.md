@@ -71,7 +71,7 @@ Task Coach never creates a messaging account or asks for credentials.
 
 You choose the days, hours, maximum number of tasks and follow-up limits.
 By default, the coach checks in about up to two different tasks per day, with up
-to two follow-ups for each unanswered task. That can mean up to six messages if
+to one follow-up for each unanswered task. That can mean up to four messages if
 your notification window has room. Replying stops further follow-ups for that
 task; later tasks stay scheduled. You can always adjust both the number of tasks
 per day and the number of follow-ups per task.
